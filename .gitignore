@@ -1,6 +1,7 @@
-node_modules/
-dist/
-.env
 *.log
-__pycache__/
+.env
 .pytest_cache/
+__pycache__/
+artifacts/
+dist/
+node_modules/

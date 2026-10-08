@@ -525,8 +525,27 @@ Built on [GenLayer](https://genlayer.com) · Vite + React + TypeScript · MIT Li
 </div>
 
 
+## Tests
+
+`tests/` runs the real contract code under the GenVM SDK in direct mode (`genlayer-test`). Only the outside world is mocked: web responses, LLM answers, and — because direct mode cannot make cross-contract calls — the *other* Aegis contracts, via a small hook in `tests/conftest.py` that stubs the calls and records the messages a contract emits.
+
+```bash
+pip install "genlayer-test==0.29.2" genvm-linter
+pytest tests -q -p no:cacheprovider      # 124 tests
+genvm-lint check contracts/*.py
+```
+
+| File | What it covers |
+|---|---|
+| `test_policy_vault.py` | Every validation, ownership, activation delay, version ordering, and that the stored record has the fields the engine reads |
+| `test_guarded_target.py` | Gate-only suspension, governance holder check, bounds, idempotent replay, digest rebinding, extend-never-shorten, suspension blocking the guarded operation |
+| `test_authority_gate.py` | One-time engine binding, token issuance rules, holder-only execute, action/duration/target/digest binding, expiry in every state, sync to `APPLIED` |
+| `test_judgment_engine.py` | URL canonicalisation and every rejection, all five verdicts reachable, token issued only on `CONFIRMED`, HTTP 403/404/500 never count as evidence, fail-closed on malformed model output, retry limit, expiry, policy/governance drift, and the validator (verdict, source states, availability, forged leader results, pickling check) |
+
 ## Status
 
-Contracts pass `genvm-lint check`. The frontend typechecks and builds (`npm run build`). The contracts are **not yet deployed** and the app has not been exercised against a live deployment; there is no automated test suite in this repository yet. Nothing here has been verified under real multi-validator consensus.
+Contracts pass `genvm-lint check` and the 124 direct-mode tests above. The frontend typechecks and builds (`npm run build`).
 
-Known gaps: evidence URLs are chosen by the incident operator, restricted to hosts the policy committed in advance; first publisher of a `protocol_id` owns it; a dispatched token can be re-dispatched after expiry (the target apply is idempotent).
+**What the tests do not prove:** real LLM behavior, real network behavior, real multi-validator timing, or the real cross-contract calls between the four contracts (those are stubbed; a Run and Debug pass after deployment is still needed). The contracts are **not yet deployed** and the app has not been exercised against a live deployment.
+
+Known gaps: evidence URLs are chosen by the incident operator, restricted to hosts the policy committed in advance; first publisher of a `protocol_id` owns it.
