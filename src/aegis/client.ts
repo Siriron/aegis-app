@@ -76,10 +76,34 @@ export class TimeoutError extends Error {
   }
 }
 
+export class TxFailedError extends Error {
+  txHash: string;
+  constructor(hash: string, reason: string) {
+    super(`The contract rejected this transaction: ${reason}. Details: ${explorerTx(hash)}`);
+    this.txHash = hash;
+  }
+}
+
+// ACCEPTED only means consensus finished. The contract call itself can still have reverted,
+// so inspect the execution result and surface the contract's own error message.
+function failureReason(tx: unknown): string | null {
+  const t = tx as {
+    txExecutionResultName?: string;
+    consensus_data?: { leader_receipt?: Array<{ execution_result?: string; error?: string | null; result?: string }> };
+    consensusData?: { leader_receipt?: Array<{ execution_result?: string; error?: string | null; result?: string }> };
+  };
+  const lr = (t.consensus_data ?? t.consensusData)?.leader_receipt?.[0];
+  const failed = t.txExecutionResultName === 'FINISHED_WITH_ERROR' || lr?.execution_result === 'ERROR';
+  if (!failed) return null;
+  const raw = lr?.error || lr?.result || 'execution error';
+  return String(raw).slice(0, 300);
+}
+
 export async function waitForReceipt(hash: string, timeoutMs = 480_000): Promise<void> {
   const interval = 4000;
+  let tx: unknown;
   try {
-    await readClient.waitForTransactionReceipt({
+    tx = await readClient.waitForTransactionReceipt({
       hash: hash as never,
       status: TransactionStatus.ACCEPTED,
       retries: Math.max(1, Math.ceil(timeoutMs / interval)),
@@ -88,6 +112,8 @@ export async function waitForReceipt(hash: string, timeoutMs = 480_000): Promise
   } catch {
     throw new TimeoutError(hash);
   }
+  const reason = failureReason(tx);
+  if (reason) throw new TxFailedError(hash, reason);
 }
 
 export async function ensureChain(): Promise<void> {
