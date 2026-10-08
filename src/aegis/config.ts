@@ -7,13 +7,13 @@ export const EXPLORER     = 'https://explorer-studio.genlayer.com';
 export const NETWORK_NAME = 'GenLayer StudioNet';
 export const CURRENCY     = 'GEN';
 
-// Deployed contract addresses — fill in after deploying all four contracts
-export const VAULT_ADDRESS   = '0x0000000000000000000000000000000000000000'; // PolicyVault
-export const ENGINE_ADDRESS  = '0x0000000000000000000000000000000000000000'; // JudgmentEngine
-export const GATE_ADDRESS    = '0x0000000000000000000000000000000000000000'; // AuthorityGate
-export const TARGET_ADDRESS  = '0x0000000000000000000000000000000000000000'; // GuardedTarget
+// Deployed contract addresses (StudioNet)
+export const VAULT_ADDRESS   : string = '0x711c5Abc26CD35fe89be962fDdBc210E59f3D636'; // PolicyVault
+export const ENGINE_ADDRESS  : string = '0x7e50078AfB31E880406197E64910Ec2dbFf6BC30'; // JudgmentEngine
+export const GATE_ADDRESS    : string = '0x88CFE8751b76064c9FC28B90fDe93815Ea966166'; // AuthorityGate
+export const TARGET_ADDRESS  : string = '0x2c4307C13E909a232acF1DbEeD4Cd4ac0A98b953'; // GuardedTarget
 
-export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+export const ZERO_ADDRESS: string = '0x0000000000000000000000000000000000000000';
 
 export const IS_DEPLOYED =
   VAULT_ADDRESS  !== ZERO_ADDRESS &&

@@ -546,6 +546,17 @@ genvm-lint check contracts/*.py
 
 Contracts pass `genvm-lint check` and the 124 direct-mode tests above. The frontend typechecks and builds (`npm run build`).
 
-**What the tests do not prove:** real LLM behavior, real network behavior, real multi-validator timing, or the real cross-contract calls between the four contracts (those are stubbed; a Run and Debug pass after deployment is still needed). The contracts are **not yet deployed** and the app has not been exercised against a live deployment.
+**What the tests do not prove:** real LLM behavior, real network behavior, real multi-validator timing, or the real cross-contract calls between the four contracts (those are stubbed; a Run and Debug pass after deployment is still needed). The contracts are deployed on StudioNet (below) and bound, but the app has not yet been exercised end to end against them.
 
 Known gaps: evidence URLs are chosen by the incident operator, restricted to hosts the policy committed in advance; first publisher of a `protocol_id` owns it.
+
+## Deployed contracts (StudioNet)
+
+| Contract | Address |
+|---|---|
+| PolicyVault | [`0x711c5Abc26CD35fe89be962fDdBc210E59f3D636`](https://explorer-studio.genlayer.com/address/0x711c5Abc26CD35fe89be962fDdBc210E59f3D636) |
+| AuthorityGate | [`0x88CFE8751b76064c9FC28B90fDe93815Ea966166`](https://explorer-studio.genlayer.com/address/0x88CFE8751b76064c9FC28B90fDe93815Ea966166) |
+| GuardedTarget | [`0x2c4307C13E909a232acF1DbEeD4Cd4ac0A98b953`](https://explorer-studio.genlayer.com/address/0x2c4307C13E909a232acF1DbEeD4Cd4ac0A98b953) |
+| JudgmentEngine | [`0x7e50078AfB31E880406197E64910Ec2dbFf6BC30`](https://explorer-studio.genlayer.com/address/0x7e50078AfB31E880406197E64910Ec2dbFf6BC30) |
+
+Engine bound to the gate in [`0xb2022e…56fe`](https://explorer-studio.genlayer.com/tx/0xb2022e8d5511e4a787c668f9e3a4d8143321731af2f8f0ac3be5045a357a56fe).
