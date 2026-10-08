@@ -3,9 +3,9 @@ import { WalletButton } from './WalletButton';
 
 const NAV = [
   { to: '/command',      label: 'Command' },
-  { to: '/charter/new',  label: 'New Charter' },
+  { to: '/policy/new',  label: 'New Charter' },
   { to: '/incident/new', label: 'New Incident' },
-  { to: '/vault',        label: 'Vault' },
+  { to: '/target',       label: 'Vault' },
 ];
 
 export function Navbar() {

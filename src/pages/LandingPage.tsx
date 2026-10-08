@@ -50,7 +50,7 @@ export function LandingPage() {
             <Link to="/command" className="btn btn-primary notched">
               View Command →
             </Link>
-            <Link to="/charter/new" className="btn btn-outline-accent notched">
+            <Link to="/policy/new" className="btn btn-outline-accent notched">
               Publish Charter
             </Link>
           </div>
