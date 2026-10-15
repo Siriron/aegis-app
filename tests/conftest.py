@@ -11,6 +11,7 @@ import sys
 import pytest
 
 ISO = "2026-10-10T10:00:00Z"
+SDK_VERSION = "v0.2.16"  # pinned: unpinned genlayer-test resolves the v0.3 RC whose bundle 404s
 
 
 def warp(direct_vm, value=ISO):

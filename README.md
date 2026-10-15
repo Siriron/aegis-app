@@ -531,7 +531,7 @@ Built on [GenLayer](https://genlayer.com) · Vite + React + TypeScript · MIT Li
 
 ```bash
 pip install "genlayer-test==0.29.2" genvm-linter
-pytest tests -q -p no:cacheprovider      # 124 tests
+pytest tests -q -p no:cacheprovider      # 156 tests
 genvm-lint check contracts/*.py
 ```
 
@@ -542,15 +542,30 @@ genvm-lint check contracts/*.py
 | `test_authority_gate.py` | One-time engine binding, token issuance rules, holder-only execute, action/duration/target/digest binding, expiry in every state, sync to `APPLIED` |
 | `test_judgment_engine.py` | URL canonicalisation and every rejection, all five verdicts reachable, token issued only on `CONFIRMED`, HTTP 403/404/500 never count as evidence, fail-closed on malformed model output, retry limit, expiry, policy/governance drift, and the validator (verdict, source states, availability, forged leader results, pickling check) |
 
+## Trust model and limits
+
+- **First registrant owns a `protocol_id`.** `PolicyVault` has no external proof that the publisher is the real project behind a `protocol_id`; the first publisher owns it. This is bounded: a policy can only suspend a `GuardedTarget` whose own `governance_address` equals the policy owner, checked at `open_incident`. Squatting a name gives no power over anyone else's target. Verifying that a name belongs to a real project is out of scope.
+- **Evidence URLs are operator-selected.** The incident operator picks the URLs, but only from hosts the policy committed in advance. A policy owner who commits to hosts they control controls the evidence: this protocol proves that independent validators read the same committed sources and agree, not that the sources are true. Use hosts you do not control.
+- **Sources must be stable.** Validators re-fetch independently and must match on HTTP status and a digest of the fetched content. A page that changes between fetches fails consensus. That is fail-closed, never a false suspension.
+- **Contradictions block confirmation.** The verdict is checked against the per-source states in code: SUPPORTS plus CONTRADICTS can only be `CONFLICTING`; `CONFIRMED` and `DISPROPORTIONATE` need a SUPPORTS source; a source with no usable content can never support or contradict.
+- **Lost cross-contract messages are recoverable and bounded.** `judge_incident` and `execute_token` emit finalized child calls. If one is lost: `retry_authority` / `sync_authority` (engine) and re-execution / `settle_token` (gate) resolve it, and every path ends in a terminal state (`AUTHORITY_FAILED`, `AUTHORITY_EXPIRED`, `APPLIED`, `EXPIRED`). Use `authority_ttl_minutes` of 30 or more so a re-send fits inside the token's life.
+- **Rejected guarded operations are on-chain facts.** During a suspension `record_signal` succeeds, returns `0` and increments `rejected_count`; it does not revert.
+
+## Frontend transaction handling
+
+A write is shown as successful only after: (1) consensus reached ACCEPTED and the receipt's execution result is positively `FINISHED_WITH_RETURN` (a bad status, an execution error or an unreadable result is shown as failure); (2) for calls that emit finalized child messages (`judge_incident`, `execute_token`, `retry_authority`) the transaction is FINALIZED, otherwise the UI says "provisional, appealable"; (3) the relevant contract state is read back and shows the expected change (verdict recorded, token applied on the target, signal recorded or rejection counted). If finalization is slow the page offers "Re-check finality".
+
 ## Status
 
-Contracts pass `genvm-lint check` and the 124 direct-mode tests above. The frontend typechecks and builds (`npm run build`).
+**Verified in this repository** (`pytest tests -q -p no:cacheprovider`, SDK pinned to GenVM v0.2.16 in every deploy,): `genvm-lint check` and `typecheck` pass on all four contracts, 156 direct-mode tests pass, the frontend typechecks, builds and passes `python scripts/check_ui_vs_abi.py`. Planted bugs (a `status_code` fetch bug, a validator that skips provenance comparison, an unrecorded rejection, a re-dispatch without delay) each fail the suite.
 
-**What the tests do not prove:** real LLM behavior, real network behavior, real multi-validator timing, or the real cross-contract calls between the four contracts (those are stubbed; a Run and Debug pass after deployment is still needed). The contracts are deployed on StudioNet (below) and bound, but the app has not yet been exercised end to end against them.
+**What the tests do not prove:** real LLM behavior, real network behavior, real multi-validator timing, or the real cross-contract calls between the four contracts (stubbed in direct mode).
 
-Known gaps: evidence URLs are chosen by the incident operator, restricted to hosts the policy committed in advance; first publisher of a `protocol_id` owns it.
+**End-to-end evidence on StudioNet:** `node scripts/e2e-lifecycle.mjs` deploys the four contracts, binds the gate and runs the whole lifecycle with real consensus: publish, activate, open, judge, finalized token issuance, execute, guarded operation rejected during suspension, restored after expiry, token and incident settlement, replay refusal, and a contradicting-evidence incident that must not confirm. It writes `docs/evidence/lifecycle-<timestamp>.md` with every transaction hash and state read, and updates the addresses in `src/aegis/config.ts`. It was not run in the sandbox that produced this commit (no StudioNet access); until a lifecycle file exists under `docs/evidence/`, no end-to-end claim is made and the addresses below belong to the previous contract version.
 
 ## Deployed contracts (StudioNet)
+
+StudioNet is a temporary test network: addresses may not survive resets, so the repository tests and the lifecycle evidence file are the proof of behavior, not the address. These addresses are the previous contract version; redeploy with `node scripts/e2e-lifecycle.mjs`.
 
 | Contract | Address |
 |---|---|

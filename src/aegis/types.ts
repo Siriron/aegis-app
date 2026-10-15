@@ -21,6 +21,10 @@ export interface Policy {
 export type IncidentStatus =
   | 'OPEN'
   | 'AUTHORITY_PENDING'
+  | 'AUTHORITY_ISSUED'
+  | 'SUSPENSION_APPLIED'
+  | 'AUTHORITY_EXPIRED'
+  | 'AUTHORITY_FAILED'
   | 'CONFIRMED_NO_GOVERNANCE'
   | 'RETRYABLE'
   | 'CLOSED_NO_AUTHORITY';
@@ -75,9 +79,12 @@ export interface Incident {
   verdict_digest: string;
   judgment_count: number;
   token_id: string;
+  authority_ttl_seconds?: number;
+  authority_retries?: number;
+  authority_emitted_at?: number;
 }
 
-export type TokenState = 'ISSUED' | 'DISPATCHED' | 'APPLIED';
+export type TokenState = 'ISSUED' | 'DISPATCHED' | 'APPLIED' | 'EXPIRED';
 
 export interface AuthorityToken {
   token_id: string;
@@ -93,6 +100,7 @@ export interface AuthorityToken {
   expires_at: number;
   state: TokenState;
   dispatched_at: number;
+  dispatch_count?: number;
   applied_at: number;
 }
 
@@ -100,6 +108,8 @@ export interface TargetStatus {
   gate_address: string;
   governance_address: string;
   signal_count: number;
+  rejected_count: number;
+  last_rejection_json: string;
   suspended_until: number;
   last_signal_json: string;
   suspension_count: number;

@@ -72,6 +72,8 @@ class GuardedTarget(gl.Contract):
     governance_address: str
     suspended_until: u256
     signal_count: u256
+    rejected_count: u256
+    last_rejection_json: str
     last_signal_json: str
     signal_records: TreeMap[str, str]
     signal_keys: DynArray[str]
@@ -84,6 +86,8 @@ class GuardedTarget(gl.Contract):
         self.governance_address = _addr(gl.message.sender_address)
         self.suspended_until    = u256(0)
         self.signal_count       = u256(0)
+        self.rejected_count     = u256(0)
+        self.last_rejection_json = ""
         self.last_signal_json   = ""
 
     def _require_gate_caller(self) -> None:
@@ -108,16 +112,28 @@ class GuardedTarget(gl.Contract):
     @gl.public.write
     def record_signal(self, signal_key: str) -> u256:
         """
-        The guarded operation. Records a unique signal key in contract state.
-        Rejected while a valid emergency suspension is active.
+        The guarded operation. Records a unique signal key in contract state and returns its
+        1-based sequence number.
+
+        While an emergency suspension is active the operation is REJECTED, and the rejection is a
+        committed on-chain fact rather than a revert: the call finishes successfully, returns 0,
+        leaves signal_count untouched, and increments rejected_count / sets last_rejection_json.
         """
-        now = _now()
-        if now < int(self.suspended_until):
-            raise gl.vm.UserError("guarded operation is suspended — emergency authority active")
         caller = self._require_direct_eoa()
         key = str(signal_key).strip()
         if not key or len(key) > 128:
             raise gl.vm.UserError("invalid signal_key")
+        now = _now()
+        if now < int(self.suspended_until):
+            self.rejected_count = u256(int(self.rejected_count) + 1)
+            self.last_rejection_json = json.dumps({
+                "signal_key": key,
+                "caller": caller,
+                "rejected_at": now,
+                "suspended_until": int(self.suspended_until),
+                "reason": "SUSPENDED_BY_EMERGENCY_AUTHORITY",
+            }, sort_keys=True)
+            return u256(0)
         if self.signal_records.get(key, ""):
             raise gl.vm.UserError("signal already recorded")
 
@@ -181,6 +197,8 @@ class GuardedTarget(gl.Contract):
             "gate_address":      self.gate_address,
             "governance_address": self.governance_address,
             "signal_count":      int(self.signal_count),
+            "rejected_count":    int(self.rejected_count),
+            "last_rejection_json": self.last_rejection_json,
             "suspended_until":   int(self.suspended_until),
             "last_signal_json":  self.last_signal_json,
             "suspension_count":  len(self.suspension_history),

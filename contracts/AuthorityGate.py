@@ -9,7 +9,10 @@ Each token is single-use, expiring, and bound to:
 
 Only the bound JudgmentEngine may issue tokens.
 Only the bound holder may execute them.
-Execution emits a finalized child call to the guarded target.
+Execution emits a finalized child call to the guarded target. If that call is lost or fails,
+the holder may re-send it (bounded by a delay, MAX_DISPATCHES and the token's expiry); the target
+applies each token_id at most once, so a re-send can never suspend twice. settle_token moves any
+unapplied, expired token to the terminal state EXPIRED, so no token stays dispatched forever.
 """
 
 import hashlib
@@ -17,6 +20,8 @@ import json
 from genlayer import *
 
 SUPPORTED_ACTION = "SUSPEND_GUARDED_OPERATION"
+REDISPATCH_DELAY = 2 * 60   # seconds before a lost finalized child call may be re-sent
+MAX_DISPATCHES = 3          # re-sends are always bounded by the token's own expiry as well
 
 
 _DAYS_IN_MONTH = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
@@ -134,6 +139,7 @@ class AuthorityGate(gl.Contract):
             "expires_at": issued_at + int(ttl_seconds),
             "state": "ISSUED",
             "dispatched_at": 0,
+            "dispatch_count": 0,
             "applied_at": 0,
         }
         self.tokens[token_id] = json.dumps(record, sort_keys=True)
@@ -158,9 +164,12 @@ class AuthorityGate(gl.Contract):
             raise gl.vm.UserError("only the designated holder may execute")
 
         state = str(rec.get("state", ""))
+        now = _now()
         if state == "APPLIED":
             raise gl.vm.UserError("token already applied")
-        if _now() > int(rec.get("expires_at", 0)):
+        if state == "EXPIRED":
+            raise gl.vm.UserError("token has expired")
+        if now > int(rec.get("expires_at", 0)):
             raise gl.vm.UserError("token has expired")
 
         target_hex = _addr(target)
@@ -182,11 +191,25 @@ class AuthorityGate(gl.Contract):
         if _sha256(reconstructed) != str(rec.get("op_digest", "")):
             raise gl.vm.UserError("operation digest mismatch — envelope tampered")
 
+        guarded = gl.get_contract_at(Address(target_hex))
+        if state == "DISPATCHED":
+            # Recovery path for a lost or failed finalized child call. The same op_digest is re-sent,
+            # so GuardedTarget stays idempotent per token_id and the token still authorises one action.
+            if str(guarded.view().get_applied_op_digest(token_id)) == str(rec.get("op_digest", "")):
+                rec["state"] = "APPLIED"
+                rec["applied_at"] = now
+                self.tokens[token_id] = json.dumps(rec, sort_keys=True)
+                return "APPLIED"
+            if now < int(rec.get("dispatched_at", 0)) + REDISPATCH_DELAY:
+                raise gl.vm.UserError("token was dispatched recently — wait before re-sending")
+            if int(rec.get("dispatch_count", 1)) >= MAX_DISPATCHES:
+                raise gl.vm.UserError("dispatch limit reached")
+
         rec["state"] = "DISPATCHED"
-        rec["dispatched_at"] = _now()
+        rec["dispatched_at"] = now
+        rec["dispatch_count"] = int(rec.get("dispatch_count", 0)) + 1
         self.tokens[token_id] = json.dumps(rec, sort_keys=True)
 
-        guarded = gl.get_contract_at(Address(target_hex))
         if action_class == SUPPORTED_ACTION:
             guarded.emit(on="finalized").apply_emergency_suspension(
                 int(duration_minutes),
@@ -220,6 +243,31 @@ class AuthorityGate(gl.Contract):
             self.tokens[token_id] = json.dumps(rec, sort_keys=True)
             return "APPLIED"
         return "DISPATCHED"
+
+    @gl.public.write
+    def settle_token(self, token_id: str) -> str:
+        """
+        Bring a token to a terminal state. Anyone may call it; it only records facts that can be
+        checked: APPLIED if the target already holds this token's op_digest, EXPIRED if the token
+        ran out unapplied. A dispatched token therefore can never stay unresolved past its expiry.
+        """
+        raw = self.tokens.get(token_id, "")
+        if not raw:
+            raise gl.vm.UserError("token not found")
+        rec = json.loads(raw)
+        state = str(rec.get("state", ""))
+        if state in ("APPLIED", "EXPIRED"):
+            return state
+        guarded = gl.get_contract_at(Address(str(rec["target"])))
+        if str(guarded.view().get_applied_op_digest(token_id)) == str(rec.get("op_digest", "")):
+            rec["state"] = "APPLIED"
+            rec["applied_at"] = _now()
+        elif _now() > int(rec.get("expires_at", 0)):
+            rec["state"] = "EXPIRED"
+        else:
+            return state
+        self.tokens[token_id] = json.dumps(rec, sort_keys=True)
+        return str(rec["state"])
 
     # ── Views ──────────────────────────────────────────────────────────────
 

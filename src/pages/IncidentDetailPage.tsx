@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Engine, parseVerdict, waitForReceipt } from '../aegis/client';
+import { Engine, Gate, parseVerdict, confirmTx } from '../aegis/client';
+import { useTxMeta } from '../aegis/useTxMeta';
 import { explorerTx } from '../aegis/config';
 import { IncidentStatusBadge, VerdictBadge, SourceStateBadge } from '../components/StatusBadge';
 import { TxStatus } from '../components/TxStatus';
@@ -9,6 +10,7 @@ import { shortAddr, formatTs, formatCountdown } from '../utils/format';
 import type { Incident, JudgmentResult } from '../aegis/types';
 
 export function IncidentDetailPage() {
+  const meta = useTxMeta();
   const { id } = useParams<{ id: string }>();
   const { address } = useWallet();
   const [incident, setIncident] = useState<Incident | null>(null);
@@ -46,14 +48,66 @@ export function IncidentDetailPage() {
 
   async function judge() {
     if (!id) return;
-    setBusy(true); setError(null); setHash(null);
+    setBusy(true); setError(null); setHash(null); meta.setResult(null);
+    const before = incident?.judgment_count ?? 0;
     try {
       const txHash = await Engine.judgeIncident(id);
       setHash(txHash);
-      await waitForReceipt(txHash, 180_000);
+      // A CONFIRMED verdict emits a finalized issue_token call, so wait for FINALIZED and then read
+      // the incident (verdict recorded, judgment counted) rather than trusting acceptance alone.
+      meta.setResult(await confirmTx(txHash, {
+        finalize: true,
+        onPhase: meta.setPhase,
+        verify: async () => {
+          const inc = await Engine.getIncident(id);
+          if (!inc || inc.judgment_count <= before || !inc.verdict_json) return 'the incident does not show a recorded verdict';
+          return null;
+        },
+      }));
       load();
     } catch (err) {
+      load();
       setError(err instanceof Error ? err.message : 'Judgment failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Mirror the gate's token state into the incident (anyone may call it).
+  async function syncAuthority() {
+    if (!id) return;
+    setBusy(true); setError(null); setHash(null); meta.setResult(null);
+    try {
+      const txHash = await Engine.syncAuthority(id);
+      setHash(txHash);
+      meta.setResult(await confirmTx(txHash, { onPhase: meta.setPhase }));
+      load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sync failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Re-send a lost finalized issue_token emission (opener only, delayed, bounded).
+  async function retryAuthority() {
+    if (!id) return;
+    setBusy(true); setError(null); setHash(null); meta.setResult(null);
+    try {
+      const txHash = await Engine.retryAuthority(id);
+      setHash(txHash);
+      meta.setResult(await confirmTx(txHash, {
+        finalize: true,
+        onPhase: meta.setPhase,
+        verify: async () => {
+          const inc = await Engine.getIncident(id);
+          return inc && (inc.authority_retries ?? 0) > (incident?.authority_retries ?? 0) ? null : 'the retry was not recorded on the incident';
+        },
+      }));
+      load();
+    } catch (err) {
+      load();
+      setError(err instanceof Error ? err.message : 'Retry failed');
     } finally {
       setBusy(false);
     }
@@ -248,6 +302,25 @@ export function IncidentDetailPage() {
             Only the opener ({shortAddr(incident.opener)}) may trigger judgment.
           </p>
         )}
+        {(incident.status === 'AUTHORITY_PENDING' || incident.status === 'AUTHORITY_ISSUED') && (
+          <div className="flex gap-3 flex-wrap mt-3">
+            <button className="btn btn-outline-accent notched-sm" onClick={() => { void syncAuthority(); }} disabled={busy}>
+              Sync authority from gate
+            </button>
+            {incident.status === 'AUTHORITY_PENDING' && isOpener &&
+              now >= (incident.authority_emitted_at ?? 0) + 600 && (incident.authority_retries ?? 0) < 3 && (
+              <button className="btn btn-ghost notched-sm" onClick={() => { void retryAuthority(); }} disabled={busy}>
+                Re-send token issuance ({incident.authority_retries ?? 0}/3 used)
+              </button>
+            )}
+          </div>
+        )}
+        {incident.status === 'AUTHORITY_FAILED' && (
+          <p className="text-xs mt-3" style={{ color: 'var(--danger)' }}>
+            The token was never issued after every bounded retry. This incident is closed with no authority;
+            the policy owner may open a new incident.
+          </p>
+        )}
         {incident.status === 'AUTHORITY_PENDING' && (
           <div className="mt-3">
             <p className="font-ui text-xs font-bold uppercase tracking-widest mb-1"
@@ -264,7 +337,7 @@ export function IncidentDetailPage() {
             )}
           </div>
         )}
-        <TxStatus hash={hash} error={error} waiting={busy} label="Judgment" />
+        <TxStatus hash={hash} error={error} waiting={busy} phase={meta.phase} result={meta.result} label="Judgment" />
       </div>
     </div>
   );

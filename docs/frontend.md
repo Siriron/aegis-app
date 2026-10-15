@@ -179,7 +179,8 @@ Accepts a genlayer-js signer (for writes) or provider (for reads).
 ### Helpers
 
 ```ts
-waitForReceipt(txHash)  // polls until transaction is finalized
+confirmTx(txHash, { finalize, verify, onPhase })  // ACCEPTED + positive FINISHED_WITH_RETURN, optional FINALIZED, optional on-chain state check; throws TxFailedError / TxUnverifiedError / FinalizationPendingError / StateMismatchError / TimeoutError
+isFinalized(txHash)     // one-shot finality re-check
 ```
 
 ---
@@ -267,10 +268,10 @@ Sticky top navigation with the Aegis logo (SVG hexagon shield), page links, and 
 ### `TxStatus`
 
 ```tsx
-<TxStatus hash={txHash} error={error} loading={loading} explorerBase={EXPLORER_BASE} />
+<TxStatus hash={hash} error={error} waiting={busy} phase={meta.phase} result={meta.result} label="Judgment" />
 ```
 
-Shows spinner during pending, hash link when submitted, error message on failure. Auto-fades on success after 8 seconds.
+Shows the phase while waiting (consensus, finalizing, verifying). On success it distinguishes "finalized and verified" from "executed and verified, provisional and appealable". Errors are shown as not confirmed; a pending finalization offers "Re-check finality". `meta` comes from `useTxMeta()` (`src/aegis/useTxMeta.ts`).
 
 ---
 

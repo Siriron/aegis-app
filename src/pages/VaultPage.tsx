@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Target, waitForReceipt } from '../aegis/client';
+import { Target, confirmTx } from '../aegis/client';
+import { useTxMeta } from '../aegis/useTxMeta';
 import { explorerAddr, TARGET_ADDRESS, IS_DEPLOYED } from '../aegis/config';
 import { TxStatus } from '../components/TxStatus';
 import { useWallet } from '../aegis/useWallet';
@@ -7,6 +8,8 @@ import { formatTs, shortAddr } from '../utils/format';
 import type { TargetStatus } from '../aegis/types';
 
 export function TargetPage() {
+  const meta = useTxMeta();
+  const [outcome, setOutcome] = useState<string | null>(null);
   const { address } = useWallet();
   const [status, setStatus] = useState<TargetStatus | null>(null);
   const [signalKeys, setSignalKeys] = useState<string[]>([]);
@@ -46,11 +49,24 @@ export function TargetPage() {
   async function recordSignal(e: React.FormEvent) {
     e.preventDefault();
     if (!signalKey.trim()) { setError('Signal key is required'); return; }
-    setBusy(true); setError(null); setHash(null);
+    setBusy(true); setError(null); setHash(null); meta.setResult(null); setOutcome(null);
+    const key = signalKey.trim();
+    const before = await Target.getStatus();
     try {
-      const txHash = await Target.recordSignal(signalKey.trim());
+      const txHash = await Target.recordSignal(key);
       setHash(txHash);
-      await waitForReceipt(txHash);
+      // The call can legitimately end two ways: RECORDED (signal_count +1) or REJECTED while
+      // suspended (rejected_count +1). Require one of them to show on-chain; never assume.
+      meta.setResult(await confirmTx(txHash, {
+        onPhase: meta.setPhase,
+        verify: async () => {
+          const after = await Target.getStatus();
+          if (!after || !before) return 'target state could not be read';
+          if (after.signal_count > before.signal_count) { setOutcome('RECORDED'); return null; }
+          if (after.rejected_count > before.rejected_count) { setOutcome('REJECTED'); return null; }
+          return 'neither signal_count nor rejected_count changed';
+        },
+      }));
       setSignalKey('');
       load();
     } catch (err) {
@@ -102,7 +118,7 @@ export function TargetPage() {
                 <strong style={{ color: 'var(--danger)' }}>
                   {formatTs(status.suspended_until)}
                 </strong>.
-                Any attempt to record a signal will be rejected on-chain.
+                Any attempt to record a signal is rejected and the rejection is recorded on-chain.
               </p>
             </div>
           ) : (
@@ -124,6 +140,7 @@ export function TargetPage() {
               { label: 'Governance',    value: shortAddr(status.governance_address, 10) },
               { label: 'Signal Count',  value: String(status.signal_count) },
               { label: 'Suspensions',   value: String(status.suspension_count) },
+              { label: 'Rejected Attempts', value: String(status.rejected_count) },
             ].map(m => (
               <div key={m.label} className="card notched-sm">
                 <p className="font-ui text-xs uppercase tracking-widest mb-0.5"
@@ -132,6 +149,16 @@ export function TargetPage() {
               </div>
             ))}
           </div>
+
+          {status.last_rejection_json && (
+            <div className="card-danger mb-6">
+              <p className="font-ui text-xs font-bold uppercase tracking-widest mb-2"
+                style={{ color: 'var(--danger)' }}>Last Rejected Attempt (committed on-chain)</p>
+              <pre className="font-mono text-xs" style={{ color: 'var(--fg-muted)', whiteSpace: 'pre-wrap' }}>
+                {status.last_rejection_json}
+              </pre>
+            </div>
+          )}
 
           {status.last_signal_json && (
             <div className="card mb-6">
@@ -176,11 +203,11 @@ export function TargetPage() {
           style={{ color: 'var(--accent)' }}>Record Signal</p>
         <p className="text-sm mb-4" style={{ color: 'var(--fg-muted)' }}>
           Records one unique authoritative signal. Each key executes once only.
-          Requires a direct EOA call. Will be rejected if the target is suspended.
+          Requires a direct EOA call. While the target is suspended the call still succeeds, but the signal is rejected and counted under Rejected Attempts.
         </p>
 
         {isSuspended && (
-          <div className="badge badge-red mb-4">Guarded operation is suspended — transaction will revert</div>
+          <div className="badge badge-red mb-4">Guarded operation is suspended — an attempt will be rejected and recorded</div>
         )}
 
         <form onSubmit={(e) => { void recordSignal(e); }} className="flex gap-3">
@@ -192,7 +219,7 @@ export function TargetPage() {
           </div>
           <div className="flex items-end pb-5">
             <button type="submit" className="btn btn-primary notched-sm"
-              disabled={busy || !address || isSuspended}>
+              disabled={busy || !address}>
               {busy ? <><span className="spinner" /> Recording…</> : 'Record'}
             </button>
           </div>
@@ -204,7 +231,12 @@ export function TargetPage() {
           </p>
         )}
 
-        <TxStatus hash={hash} error={error} waiting={busy} label="Signal record" />
+        <TxStatus hash={hash} error={error} waiting={busy} phase={meta.phase} result={meta.result} label="Signal call" />
+        {outcome && !busy && (
+          <p className="text-sm mt-2" style={{ color: outcome === 'RECORDED' ? 'var(--success)' : 'var(--danger)' }}>
+            {outcome === 'RECORDED' ? 'Signal recorded on-chain.' : 'Guarded operation REJECTED on-chain: the target is suspended.'}
+          </p>
+        )}
 
         <div className="flex gap-2 mt-4">
           <button className="btn btn-ghost notched-sm text-xs" onClick={load} disabled={busy}>

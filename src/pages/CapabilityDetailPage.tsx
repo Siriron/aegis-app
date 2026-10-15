@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Gate, waitForReceipt } from '../aegis/client';
+import { Gate, Target, confirmTx } from '../aegis/client';
+import { useTxMeta } from '../aegis/useTxMeta';
 import { explorerAddr } from '../aegis/config';
 import { TokenStateBadge } from '../components/StatusBadge';
 import { TxStatus } from '../components/TxStatus';
@@ -9,6 +10,7 @@ import { shortAddr, formatTs, formatCountdown } from '../utils/format';
 import type { AuthorityToken } from '../aegis/types';
 
 export function TokenDetailPage() {
+  const meta = useTxMeta();
   const { id } = useParams<{ id: string }>();
   const { address } = useWallet();
   const [token, setToken] = useState<AuthorityToken | null>(null);
@@ -43,7 +45,7 @@ export function TokenDetailPage() {
 
   async function execute() {
     if (!token || !id) return;
-    setBusy(true); setError(null); setHash(null);
+    setBusy(true); setError(null); setHash(null); meta.setResult(null);
     try {
       const txHash = await Gate.executeToken({
         tokenId: id,
@@ -52,9 +54,21 @@ export function TokenDetailPage() {
         durationMinutes: token.duration_minutes,
       });
       setHash(txHash);
-      await waitForReceipt(txHash, 180_000);
+      // The child call to the target is a finalized emission: wait for FINALIZED, then read the
+      // target's own state and require it to hold this token's op digest.
+      meta.setResult(await confirmTx(txHash, {
+        finalize: true,
+        onPhase: meta.setPhase,
+        verify: async () => {
+          const t = await Gate.getToken(id);
+          if (!t || (t.state !== 'DISPATCHED' && t.state !== 'APPLIED')) return 'the gate does not show the token as dispatched';
+          const applied = await Target.getAppliedDigest(token.token_id);
+          return applied === token.op_digest ? null : 'the guarded target has not applied the suspension yet (use Sync / Settle once its child call lands)';
+        },
+      }));
       load();
     } catch (err) {
+      load();
       setError(err instanceof Error ? err.message : 'Execution failed');
     } finally {
       setBusy(false);
@@ -63,14 +77,36 @@ export function TokenDetailPage() {
 
   async function sync() {
     if (!id) return;
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setHash(null); meta.setResult(null);
     try {
       const txHash = await Gate.syncToken(id);
       setHash(txHash);
-      await waitForReceipt(txHash);
+      meta.setResult(await confirmTx(txHash, { onPhase: meta.setPhase }));
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sync failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Anyone may settle: it records APPLIED (target holds the digest) or the terminal EXPIRED.
+  async function settle() {
+    if (!id) return;
+    setBusy(true); setError(null); setHash(null); meta.setResult(null);
+    try {
+      const txHash = await Gate.settleToken(id);
+      setHash(txHash);
+      meta.setResult(await confirmTx(txHash, {
+        onPhase: meta.setPhase,
+        verify: async () => {
+          const t = await Gate.getToken(id);
+          return t && (t.state === 'APPLIED' || t.state === 'EXPIRED') ? null : 'the token is not yet applied or expired';
+        },
+      }));
+      load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Settle failed');
     } finally {
       setBusy(false);
     }
@@ -92,6 +128,9 @@ export function TokenDetailPage() {
   const isHolder = address?.toLowerCase() === token.holder.toLowerCase();
   const canExecute = isHolder && token.state === 'ISSUED' && !expired;
   const canSync = isHolder && token.state === 'DISPATCHED';
+  const canResend = isHolder && token.state === 'DISPATCHED' && !expired && now >= token.dispatched_at + 120 &&
+    (token.dispatch_count ?? 1) < 3;
+  const canSettle = token.state !== 'APPLIED' && token.state !== 'EXPIRED' && (token.state === 'DISPATCHED' || expired);
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-10">
@@ -180,6 +219,19 @@ export function TokenDetailPage() {
               {busy ? <><span className="spinner" /> Syncing…</> : 'Sync Status'}
             </button>
           )}
+          {canResend && (
+            <button className="btn btn-ghost notched-sm" onClick={() => { void execute(); }} disabled={busy}>
+              Re-send child call
+            </button>
+          )}
+          {canSettle && (
+            <button className="btn btn-ghost notched-sm" onClick={() => { void settle(); }} disabled={busy}>
+              {expired ? 'Settle (expire or apply)' : 'Settle'}
+            </button>
+          )}
+          {token.state === 'EXPIRED' && (
+            <span className="badge badge-gray text-sm px-4 py-2">Token Expired — terminal</span>
+          )}
           {token.state === 'APPLIED' && (
             <span className="badge badge-green text-sm px-4 py-2">Token Applied</span>
           )}
@@ -190,12 +242,12 @@ export function TokenDetailPage() {
             Only the holder ({shortAddr(token.holder)}) may execute this token.
           </p>
         )}
-        {expired && token.state === 'ISSUED' && (
+        {expired && token.state !== 'APPLIED' && token.state !== 'EXPIRED' && (
           <p className="text-xs mt-2" style={{ color: 'var(--danger)' }}>
-            This token has expired and can no longer be executed.
+            This token has expired and can no longer be executed. Use Settle to record it as applied (if the target already applied it) or as terminally expired.
           </p>
         )}
-        <TxStatus hash={hash} error={error} waiting={busy} label="Token execution" />
+        <TxStatus hash={hash} error={error} waiting={busy} phase={meta.phase} result={meta.result} label="Token action" />
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import json
 import pytest
-from conftest import warp, js, hexaddr, checksum, epoch
+from conftest import warp, js, hexaddr, checksum, epoch, SDK_VERSION
 
 C = "contracts/JudgmentEngine.py"
 T0 = "2026-10-10T10:00:00Z"
@@ -38,7 +38,7 @@ def env(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie, worl
     e.target = bytes.fromhex("dd" * 20)
     e.active = POLICY_ID
     direct_vm.sender = direct_alice
-    e.c = direct_deploy(C, hexaddr(e.vault), hexaddr(e.gate))
+    e.c = direct_deploy(C, hexaddr(e.vault), hexaddr(e.gate), sdk_version=SDK_VERSION)
     warp(direct_vm, T0)
     e.policy = make_policy(e.alice, e.target)     # needs the SDK Address type, so only after deploy
     world.stub_view(e.vault, "get_policy", lambda a: json.dumps(e.policy) if a[0] == POLICY_ID else "")
@@ -152,18 +152,43 @@ def test_policy_owner_must_govern_the_target(env, direct_bob):
 
 
 # ---------------------------------------------------------------- judge_incident: every verdict is reachable
-@pytest.mark.parametrize("verdict,status", [
-    ("NOT_CONFIRMED", "CLOSED_NO_AUTHORITY"),
-    ("WEAK_EVIDENCE", "RETRYABLE"),
-    ("CONFLICTING", "RETRYABLE"),
-    ("DISPROPORTIONATE", "CLOSED_NO_AUTHORITY"),
+@pytest.mark.parametrize("verdict,states,status", [
+    ("NOT_CONFIRMED", {U1: "NEUTRAL", U2: "CONTRADICTS"}, "CLOSED_NO_AUTHORITY"),
+    ("WEAK_EVIDENCE", {U1: "NEUTRAL", U2: "NEUTRAL"}, "RETRYABLE"),
+    ("CONFLICTING", {U1: "SUPPORTS", U2: "CONTRADICTS"}, "RETRYABLE"),
+    ("DISPROPORTIONATE", {U1: "SUPPORTS", U2: "SUPPORTS"}, "CLOSED_NO_AUTHORITY"),
 ])
-def test_non_confirming_verdicts_issue_no_authority(env, verdict, status):
+def test_non_confirming_verdicts_issue_no_authority(env, verdict, states, status):
     open_incident(env)
-    mock_evidence(env, verdict, states={U1: "NEUTRAL", U2: "CONTRADICTS"})
+    mock_evidence(env, verdict, states=states)
     out = judge(env)
     assert out["verdict"] == verdict
     assert incident(env)["status"] == status
+    assert env.world.emitted == []
+
+
+@pytest.mark.parametrize("claimed,states,derived", [
+    ("CONFIRMED", {U1: "SUPPORTS", U2: "CONTRADICTS"}, "CONFLICTING"),            # contradiction can never confirm
+    ("DISPROPORTIONATE", {U1: "SUPPORTS", U2: "CONTRADICTS"}, "CONFLICTING"),
+    ("NOT_CONFIRMED", {U1: "SUPPORTS", U2: "CONTRADICTS"}, "CONFLICTING"),
+    ("WEAK_EVIDENCE", {U1: "SUPPORTS", U2: "CONTRADICTS"}, "CONFLICTING"),
+    ("CONFLICTING", {U1: "SUPPORTS", U2: "NEUTRAL"}, "WEAK_EVIDENCE"),            # no real conflict
+    ("CONFLICTING", {U1: "CONTRADICTS", U2: "NEUTRAL"}, "WEAK_EVIDENCE"),
+    ("NOT_CONFIRMED", {U1: "SUPPORTS", U2: "NEUTRAL"}, "WEAK_EVIDENCE"),          # supported trigger is not "not confirmed"
+    ("DISPROPORTIONATE", {U1: "NEUTRAL", U2: "NEUTRAL"}, "WEAK_EVIDENCE"),        # no trigger, nothing to be disproportionate to
+])
+def test_the_verdict_is_derived_consistently_from_the_source_states(env, claimed, states, derived):
+    open_incident(env)
+    mock_evidence(env, claimed, states=states)
+    assert judge(env)["verdict"] == derived
+    assert env.world.emitted == []
+
+
+def test_a_contradicting_source_blocks_an_otherwise_confirmed_incident(env):
+    open_incident(env)
+    mock_evidence(env, "CONFIRMED", states={U1: "SUPPORTS", U2: "CONTRADICTS"})
+    out = judge(env)
+    assert out["verdict"] == "CONFLICTING" and incident(env)["status"] == "RETRYABLE"
     assert env.world.emitted == []
 
 
@@ -426,3 +451,138 @@ def test_no_storage_object_crosses_into_the_nondet_closures(env):
     mock_evidence(env, "CONFIRMED")
     assert judge(env)["verdict"] == "CONFIRMED"
     assert env.vm.run_validator() is True
+
+
+# ---------------------------------------------------------------- validator: contradiction + provenance consistency
+def test_validator_rejects_a_verdict_inconsistent_with_its_own_source_states(env):
+    open_incident(env)
+    mock_evidence(env, "CONFIRMED")
+    judge(env)
+    mixed = [{"url": U1, "state": "SUPPORTS", "http_status": 200}, {"url": U2, "state": "CONTRADICTS", "http_status": 200}]
+    forged = {"verdict": "CONFIRMED", "rationale": GOOD_REASON, "source_states": mixed}
+    assert env.vm.run_validator(leader_result=forged) is False
+    forged2 = {"verdict": "CONFLICTING", "rationale": GOOD_REASON,
+               "source_states": [{"url": U1, "state": "SUPPORTS"}, {"url": U2, "state": "SUPPORTS"}]}
+    assert env.vm.run_validator(leader_result=forged2) is False
+
+
+def test_validator_rejects_when_only_the_content_digest_differs(env):
+    open_incident(env)
+    mock_evidence(env, "CONFIRMED", body="outage body")
+    judge(env)
+    mock_evidence(env, "CONFIRMED", body="outage body, silently edited")     # same states, same status, other content
+    assert env.vm.run_validator() is False
+
+
+def test_validator_rejects_when_only_the_http_status_differs(env):
+    open_incident(env)
+    mock_evidence(env, "CONFIRMED", status=200)
+    judge(env)
+    mock_evidence(env, "CONFIRMED", status=203)                               # still 2xx, same body, same states
+    assert env.vm.run_validator() is False
+
+
+def test_validator_rejects_a_leader_that_forges_provenance(env):
+    open_incident(env)
+    mock_evidence(env, "CONFIRMED")
+    judge(env)
+    forged = {"verdict": "CONFIRMED", "rationale": GOOD_REASON, "source_states": [
+        {"url": U1, "state": "SUPPORTS", "http_status": 200, "content_digest": "0" * 64},
+        {"url": U2, "state": "SUPPORTS", "http_status": 200, "content_digest": "0" * 64}]}
+    assert env.vm.run_validator(leader_result=forged) is False
+
+
+# ---------------------------------------------------------------- recovery of the cross-contract emission
+def confirmed(env):
+    open_incident(env)
+    mock_evidence(env, "CONFIRMED")
+    judge(env)
+    assert incident(env)["status"] == "AUTHORITY_PENDING" and len(env.world.emitted) == 1
+
+
+def gate_token(env, state=None):
+    env.world.stub_view(env.gate, "get_token", json.dumps({"state": state}) if state else "")
+
+
+@pytest.mark.parametrize("gate_state,status", [
+    ("ISSUED", "AUTHORITY_ISSUED"), ("DISPATCHED", "AUTHORITY_ISSUED"),
+    ("APPLIED", "SUSPENSION_APPLIED"), ("EXPIRED", "AUTHORITY_EXPIRED"),
+])
+def test_sync_authority_mirrors_the_gate_token_state(env, gate_state, status):
+    confirmed(env)
+    gate_token(env, gate_state)
+    assert env.c.sync_authority("inc-1") == status
+    assert incident(env)["status"] == status
+
+
+def test_sync_authority_follows_the_token_to_applied(env):
+    confirmed(env)
+    gate_token(env, "ISSUED")
+    env.c.sync_authority("inc-1")
+    gate_token(env, "APPLIED")
+    assert env.c.sync_authority("inc-1") == "SUSPENSION_APPLIED"
+    assert env.c.sync_authority("inc-1") == "SUSPENSION_APPLIED"        # terminal, idempotent
+
+
+def test_sync_authority_leaves_a_pending_incident_alone_while_retries_remain(env):
+    confirmed(env)
+    gate_token(env, None)
+    warp(env.vm, "2026-10-10T10:20:00Z")
+    assert env.c.sync_authority("inc-1") == "AUTHORITY_PENDING"
+
+
+def test_sync_authority_on_other_states_and_unknown_incidents(env):
+    open_incident(env)
+    assert env.c.sync_authority("inc-1") == "OPEN"
+    with env.vm.expect_revert("incident not found"):
+        env.c.sync_authority("inc-missing")
+
+
+def test_a_lost_issue_token_emission_is_re_sent_with_identical_arguments(env):
+    confirmed(env)
+    gate_token(env, None)
+    warp(env.vm, "2026-10-10T10:10:00Z")
+    assert env.c.retry_authority("inc-1") == "AGT-inc-1"
+    assert len(env.world.emitted) == 2
+    assert env.world.emitted[1] == env.world.emitted[0]                       # same token id, same digest, same ttl
+    assert incident(env)["authority_retries"] == 1
+
+
+def test_authority_retry_is_delayed_opener_only_and_stops_once_the_token_exists(env, direct_bob):
+    confirmed(env)
+    gate_token(env, None)
+    with env.vm.expect_revert("not yet allowed"):
+        env.c.retry_authority("inc-1")
+    warp(env.vm, "2026-10-10T10:10:00Z")
+    env.vm.sender = direct_bob
+    with env.vm.expect_revert("only the incident opener"):
+        env.c.retry_authority("inc-1")
+    env.vm.sender = env.alice
+    gate_token(env, "ISSUED")
+    with env.vm.expect_revert("token already exists"):
+        env.c.retry_authority("inc-1")
+    assert len(env.world.emitted) == 1
+
+
+def test_authority_retry_needs_a_pending_incident(env):
+    open_incident(env)
+    with env.vm.expect_revert("not awaiting authority issuance"):
+        env.c.retry_authority("inc-1")
+    with env.vm.expect_revert("incident not found"):
+        env.c.retry_authority("inc-missing")
+
+
+def test_a_permanently_lost_emission_ends_in_authority_failed_not_limbo(env):
+    confirmed(env)
+    gate_token(env, None)
+    t = ["10:10", "10:21", "10:32"]
+    for i, hhmm in enumerate(t, start=1):
+        warp(env.vm, f"2026-10-10T{hhmm}:00Z")
+        env.c.retry_authority("inc-1")
+        assert incident(env)["authority_retries"] == i
+    warp(env.vm, "2026-10-10T10:43:00Z")
+    with env.vm.expect_revert("retry limit reached"):
+        env.c.retry_authority("inc-1")
+    assert env.c.sync_authority("inc-1") == "AUTHORITY_FAILED"
+    assert incident(env)["status"] == "AUTHORITY_FAILED"
+    assert len(env.world.emitted) == 4

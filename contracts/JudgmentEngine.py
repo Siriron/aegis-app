@@ -24,7 +24,8 @@ Verdicts:
   CONFLICTING     — approved sources materially disagree
   DISPROPORTIONATE — trigger exists but the requested action is too broad
 
-Only CONFIRMED emits a finalized AuthorityGate.issue_token(...)
+Only CONFIRMED emits a finalized AuthorityGate.issue_token(...). A lost emission is recoverable
+through retry_authority / sync_authority and ends in AUTHORITY_FAILED, never in permanent limbo.
 """
 
 import hashlib
@@ -49,6 +50,8 @@ MAX_EXCERPT        = 6000
 MAX_FETCH_ERR      = 300
 MAX_RETRIES        = 3
 INCIDENT_TTL       = 24 * 60 * 60   # 24 hours
+AUTHORITY_RETRY_DELAY = 10 * 60     # seconds before a lost issue_token emission may be re-sent
+MAX_AUTHORITY_RETRIES = 3
 
 
 _DAYS_IN_MONTH = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
@@ -182,6 +185,31 @@ def _clean_verdict(raw, expected_urls: list) -> dict:
     }
 
 
+def _derive_verdict(verdict: str, states: list) -> str:
+    """
+    Deterministic consistency rule between the model's verdict and the per-source states.
+    The model chooses the verdict; code decides whether the source states can support it.
+    Applied by the leader AND re-checked by every validator, so a verdict that contradicts
+    its own evidence can never reach consensus.
+      - a SUPPORTS and a CONTRADICTS among usable sources is always CONFLICTING
+      - CONFIRMED / DISPROPORTIONATE need at least one SUPPORTS (otherwise WEAK_EVIDENCE)
+      - CONFLICTING needs both a SUPPORTS and a CONTRADICTS (otherwise WEAK_EVIDENCE)
+      - NOT_CONFIRMED cannot coexist with a SUPPORTS (otherwise WEAK_EVIDENCE)
+    """
+    kinds = {str(x.get("state", "")) for x in states}
+    sup = "SUPPORTS" in kinds
+    con = "CONTRADICTS" in kinds
+    if sup and con:
+        return "CONFLICTING"
+    if verdict in ("CONFIRMED", "DISPROPORTIONATE") and not sup:
+        return "WEAK_EVIDENCE"
+    if verdict == "CONFLICTING":
+        return "WEAK_EVIDENCE"
+    if verdict == "NOT_CONFIRMED" and sup:
+        return "WEAK_EVIDENCE"
+    return verdict
+
+
 def _sanitize(text, max_len) -> str:
     if not isinstance(text, str):
         return ""
@@ -273,22 +301,21 @@ def _run_once(policy: dict, incident: dict) -> dict:
     raw = gl.nondet.exec_prompt(prompt, response_format="json")
     result = _clean_verdict(raw, urls)
 
-    # A SUPPORTS state is only valid if the source actually returned content.
+    # A source state other than UNAVAILABLE is only valid if the source actually returned content.
+    # A model that "reads" an error page is untrustworthy: the state is corrected and the whole
+    # answer is downgraded to WEAK_EVIDENCE.
     by_url = {str(f.get("url", "")): f for f in fetched}
     invalid = False
     for ss in result.get("source_states", []):
         src = by_url.get(str(ss.get("url", "")), {})
-        if ss.get("state") == "SUPPORTS" and not (
-            200 <= int(src.get("status", 0)) < 300 and str(src.get("content", "")).strip()
-        ):
+        usable = 200 <= int(src.get("status", 0)) < 300 and bool(str(src.get("content", "")).strip())
+        if ss.get("state") != "UNAVAILABLE" and not usable:
             ss["state"] = "UNAVAILABLE"
             ss["finding"] = "Source did not return usable content."
             invalid = True
-    if invalid or (
-        result.get("verdict") == "CONFIRMED"
-        and not any(ss.get("state") == "SUPPORTS" for ss in result.get("source_states", []))
-    ):
+    if invalid:
         result["verdict"] = "WEAK_EVIDENCE"
+    result["verdict"] = _derive_verdict(result["verdict"], result.get("source_states", []))
 
     # Provenance is stamped from code-derived fetch data, never trusted to the LLM.
     for ss in result.get("source_states", []):
@@ -459,6 +486,9 @@ class JudgmentEngine(gl.Contract):
             "verdict_digest": "",
             "judgment_count": 0,
             "token_id": "",
+            "authority_ttl_seconds": int(policy.get("authority_ttl_minutes", 30)) * 60,
+            "authority_retries": 0,
+            "authority_emitted_at": 0,
         }
         self.incidents[incident_id] = json.dumps(record, sort_keys=True)
         self.incident_index.append(incident_id)
@@ -513,12 +543,18 @@ class JudgmentEngine(gl.Contract):
             # Verdict is a discrete LLM choice: exact agreement, no tolerance.
             if leader.get("verdict") not in VERDICTS or leader["verdict"] != own.get("verdict"):
                 return False
-            # Per-source classification gates CONFIRMED: exact agreement.
-            l_states = {str(x["url"]): str(x["state"]) for x in leader.get("source_states", [])}
-            o_states = {str(x["url"]): str(x["state"]) for x in own.get("source_states", [])}
-            if l_states != o_states:
+            # The leader's verdict must be consistent with its own per-source states
+            # (CONFIRMED needs a SUPPORTS, SUPPORTS + CONTRADICTS is CONFLICTING, ...).
+            if _derive_verdict(leader["verdict"], leader.get("source_states", [])) != leader["verdict"]:
                 return False
-            if leader["verdict"] == "CONFIRMED" and "SUPPORTS" not in l_states.values():
+            # Per-source classification AND code-derived fetch provenance: exact agreement.
+            # A leader cannot claim a different HTTP status or content digest than validators fetched.
+            def _prov(res):
+                return {
+                    str(x["url"]): (str(x["state"]), int(x.get("http_status", 0)), str(x.get("content_digest", "")))
+                    for x in res.get("source_states", [])
+                }
+            if _prov(leader) != _prov(own):
                 return False
             return len(str(leader.get("rationale", "")).strip()) >= 20
 
@@ -561,6 +597,7 @@ class JudgmentEngine(gl.Contract):
                 token_id = "AGT-" + incident_id
                 incident["token_id"] = token_id
                 incident["status"]   = "AUTHORITY_PENDING"
+                incident["authority_emitted_at"] = _now()
                 gate = gl.get_contract_at(Address(self.gate_address))
                 gate.emit(on="finalized").issue_token(
                     token_id,
@@ -583,6 +620,97 @@ class JudgmentEngine(gl.Contract):
 
         self.incidents[incident_id] = json.dumps(incident, sort_keys=True)
         return json.dumps(verdict, sort_keys=True)
+
+    # ── Recovery of the cross-contract emission ────────────────────────────
+
+    def _gate_token(self, token_id: str) -> dict:
+        gate = gl.get_contract_at(Address(self.gate_address))
+        raw = gate.view().get_token(token_id)
+        if not raw:
+            return {}
+        try:
+            tok = json.loads(raw)
+        except Exception:
+            return {}
+        return tok if isinstance(tok, dict) else {}
+
+    @gl.public.write
+    def sync_authority(self, incident_id: str) -> str:
+        """
+        Mirror the AuthorityGate's token state into the incident. Anyone may call it: it only copies
+        what the gate already holds. It also closes an incident whose finalized issue_token emission
+        was lost and could not be re-sent (AUTHORITY_FAILED), so nothing stays pending forever.
+        """
+        raw = self.incidents.get(incident_id, "")
+        if not raw:
+            raise gl.vm.UserError("incident not found")
+        incident = json.loads(raw)
+        status = str(incident.get("status", ""))
+        if status not in ("AUTHORITY_PENDING", "AUTHORITY_ISSUED"):
+            return status   # terminal or not applicable
+        tok = self._gate_token(str(incident.get("token_id", "")))
+        if tok:
+            gate_state = str(tok.get("state", ""))
+            new_status = {
+                "APPLIED": "SUSPENSION_APPLIED",
+                "EXPIRED": "AUTHORITY_EXPIRED",
+            }.get(gate_state, "AUTHORITY_ISSUED")
+            if new_status != status:
+                incident["status"] = new_status
+                self.incidents[incident_id] = json.dumps(incident, sort_keys=True)
+            return new_status
+        if (
+            status == "AUTHORITY_PENDING"
+            and int(incident.get("authority_retries", 0)) >= MAX_AUTHORITY_RETRIES
+            and _now() >= int(incident.get("authority_emitted_at", 0)) + AUTHORITY_RETRY_DELAY
+        ):
+            incident["status"] = "AUTHORITY_FAILED"
+            self.incidents[incident_id] = json.dumps(incident, sort_keys=True)
+            return "AUTHORITY_FAILED"
+        return status
+
+    @gl.public.write
+    def retry_authority(self, incident_id: str) -> str:
+        """
+        Re-send the finalized issue_token emission for a CONFIRMED incident whose token never showed
+        up in the AuthorityGate. Safe to repeat: the token_id is fixed, so a duplicate that lands
+        later is rejected by the gate. Bounded by a delay and MAX_AUTHORITY_RETRIES.
+        """
+        raw = self.incidents.get(incident_id, "")
+        if not raw:
+            raise gl.vm.UserError("incident not found")
+        incident = json.loads(raw)
+        if _addr(gl.message.sender_address) != str(incident.get("opener", "")):
+            raise gl.vm.UserError("only the incident opener may retry authority issuance")
+        if str(incident.get("status", "")) != "AUTHORITY_PENDING":
+            raise gl.vm.UserError("incident is not awaiting authority issuance")
+        token_id = str(incident.get("token_id", ""))
+        if self._gate_token(token_id):
+            raise gl.vm.UserError("token already exists in the AuthorityGate — call sync_authority")
+        now = _now()
+        if now < int(incident.get("authority_emitted_at", 0)) + AUTHORITY_RETRY_DELAY:
+            raise gl.vm.UserError("authority emission retry is not yet allowed")
+        retries = int(incident.get("authority_retries", 0))
+        if retries >= MAX_AUTHORITY_RETRIES:
+            raise gl.vm.UserError("authority retry limit reached")
+
+        incident["authority_retries"] = retries + 1
+        incident["authority_emitted_at"] = now
+        self.incidents[incident_id] = json.dumps(incident, sort_keys=True)
+        gate = gl.get_contract_at(Address(self.gate_address))
+        gate.emit(on="finalized").issue_token(
+            token_id,
+            incident_id,
+            str(incident["opener"]),
+            str(incident["target"]),
+            str(incident["action_class"]),
+            int(incident["duration_minutes"]),
+            str(incident["op_digest"]),
+            str(incident["policy_hash"]),
+            str(incident["verdict_digest"]),
+            int(incident.get("authority_ttl_seconds", 1800)),
+        )
+        return token_id
 
     # ── Views ──────────────────────────────────────────────────────────────
 

@@ -79,41 +79,158 @@ export class TimeoutError extends Error {
 export class TxFailedError extends Error {
   txHash: string;
   constructor(hash: string, reason: string) {
-    super(`The contract rejected this transaction: ${reason}. Details: ${explorerTx(hash)}`);
+    super(`The transaction did not execute successfully: ${reason}. Details: ${explorerTx(hash)}`);
     this.txHash = hash;
   }
 }
 
-// ACCEPTED only means consensus finished. The contract call itself can still have reverted,
-// so inspect the execution result and surface the contract's own error message.
-function failureReason(tx: unknown): string | null {
-  const t = tx as {
-    txExecutionResultName?: string;
-    consensus_data?: { leader_receipt?: Array<{ execution_result?: string; error?: string | null; result?: string }> };
-    consensusData?: { leader_receipt?: Array<{ execution_result?: string; error?: string | null; result?: string }> };
-  };
-  const lr = (t.consensus_data ?? t.consensusData)?.leader_receipt?.[0];
-  const failed = t.txExecutionResultName === 'FINISHED_WITH_ERROR' || lr?.execution_result === 'ERROR';
-  if (!failed) return null;
-  const raw = lr?.error || lr?.result || 'execution error';
-  return String(raw).slice(0, 300);
+// The receipt could not be read as a success OR a failure. Never shown as success.
+export class TxUnverifiedError extends Error {
+  txHash: string;
+  constructor(hash: string) {
+    super(`Could not verify the execution result of this transaction, so it is not treated as successful. Check it on the explorer: ${explorerTx(hash)}`);
+    this.txHash = hash;
+  }
 }
 
-export async function waitForReceipt(hash: string, timeoutMs = 480_000): Promise<void> {
-  const interval = 4000;
-  let tx: unknown;
+// Accepted and executed, but not yet FINALIZED: provisional and still appealable.
+export class FinalizationPendingError extends Error {
+  txHash: string;
+  constructor(hash: string) {
+    super(`Accepted and executed, but not finalized yet — the result is provisional and appealable. Re-check later: ${explorerTx(hash)}`);
+    this.txHash = hash;
+  }
+}
+
+// The transaction executed, but the contract state does not show the expected change.
+export class StateMismatchError extends Error {
+  txHash: string;
+  constructor(hash: string, detail: string) {
+    super(`Transaction executed, but the on-chain state does not confirm it: ${detail}. ${explorerTx(hash)}`);
+    this.txHash = hash;
+  }
+}
+
+type Receipt = {
+  statusName?: string;
+  status?: unknown;
+  txExecutionResultName?: string;
+  consensus_data?: { leader_receipt?: Array<{ execution_result?: string; error?: string | null; result?: string }> };
+  consensusData?: { leader_receipt?: Array<{ execution_result?: string; error?: string | null; result?: string }> };
+};
+
+export interface TxInspection {
+  status: string;                           // e.g. ACCEPTED, FINALIZED, UNDETERMINED
+  execution: 'SUCCESS' | 'ERROR' | 'UNKNOWN';
+  error: string | null;
+}
+
+// Pure reading of a receipt. ACCEPTED only means the validators agreed on a result; that result
+// can itself be an execution error. Success is therefore positive: FINISHED_WITH_RETURN (or the
+// leader receipt reporting SUCCESS). Anything unreadable is UNKNOWN, never success.
+export function inspectTx(tx: unknown): TxInspection {
+  const t = (tx ?? {}) as Receipt;
+  const lr = (t.consensus_data ?? t.consensusData)?.leader_receipt?.[0];
+  const status = String(t.statusName ?? t.status ?? '').toUpperCase();
+  const resultName = t.txExecutionResultName;
+  let execution: TxInspection['execution'] = 'UNKNOWN';
+  if (resultName === 'FINISHED_WITH_RETURN' || lr?.execution_result === 'SUCCESS') execution = 'SUCCESS';
+  if (resultName === 'FINISHED_WITH_ERROR' || lr?.execution_result === 'ERROR') execution = 'ERROR';
+  const error = execution === 'ERROR' ? String(lr?.error || lr?.result || 'execution error').slice(0, 300) : null;
+  return { status, execution, error };
+}
+
+const BAD_STATUSES = ['UNDETERMINED', 'LEADER_TIMEOUT', 'VALIDATORS_TIMEOUT', 'CANCELED', 'CANCELLED'];
+
+export type TxPhase = 'consensus' | 'finalizing' | 'verifying';
+
+export interface ConfirmOptions {
+  /** Wait for FINALIZED (needed whenever the call emits a finalized child message). */
+  finalize?: boolean;
+  /** Read the contract state; return null when it shows the expected change, else a short reason. */
+  verify?: () => Promise<string | null>;
+  onPhase?: (phase: TxPhase) => void;
+  timeoutMs?: number;
+  finalizeTimeoutMs?: number;
+}
+
+export interface TxResult {
+  hash: string;
+  finalized: boolean;
+}
+
+const POLL_MS = 4000;
+
+async function waitStatus(hash: string, status: unknown, timeoutMs: number): Promise<unknown> {
+  return readClient.waitForTransactionReceipt({
+    hash: hash as never,
+    status: status as never,
+    retries: Math.max(1, Math.ceil(timeoutMs / POLL_MS)),
+    interval: POLL_MS,
+  });
+}
+
+function assertExecuted(hash: string, tx: unknown): TxInspection {
+  const info = inspectTx(tx);
+  if (BAD_STATUSES.some(b => info.status.includes(b))) throw new TxFailedError(hash, info.status);
+  if (info.execution === 'ERROR') throw new TxFailedError(hash, info.error ?? 'execution error');
+  if (info.execution !== 'SUCCESS') throw new TxUnverifiedError(hash);
+  return info;
+}
+
+async function verifyState(hash: string, verify: () => Promise<string | null>): Promise<void> {
+  let reason: string | null = 'not read yet';
+  for (let i = 0; i < 8; i++) {
+    try { reason = await verify(); } catch { reason = 'state could not be read'; }
+    if (reason === null) return;
+    await new Promise(r => setTimeout(r, POLL_MS));
+  }
+  throw new StateMismatchError(hash, reason ?? 'unknown');
+}
+
+/**
+ * Authoritative confirmation of a submitted transaction:
+ *  1. wait for consensus (ACCEPTED) and read the execution result positively,
+ *  2. optionally wait for FINALIZED,
+ *  3. optionally read the contract state and require the expected change.
+ * Throws a specific error for every way this can fail; resolves only on verified success.
+ */
+export async function confirmTx(hash: string, opts: ConfirmOptions = {}): Promise<TxResult> {
+  const timeoutMs = opts.timeoutMs ?? 480_000;
+  opts.onPhase?.('consensus');
+  let accepted: unknown;
   try {
-    tx = await readClient.waitForTransactionReceipt({
-      hash: hash as never,
-      status: TransactionStatus.ACCEPTED,
-      retries: Math.max(1, Math.ceil(timeoutMs / interval)),
-      interval,
-    });
+    accepted = await waitStatus(hash, TransactionStatus.ACCEPTED, timeoutMs);
   } catch {
     throw new TimeoutError(hash);
   }
-  const reason = failureReason(tx);
-  if (reason) throw new TxFailedError(hash, reason);
+  assertExecuted(hash, accepted);
+
+  let finalized = false;
+  if (opts.finalize) {
+    opts.onPhase?.('finalizing');
+    try {
+      const fin = await waitStatus(hash, TransactionStatus.FINALIZED, opts.finalizeTimeoutMs ?? 600_000);
+      assertExecuted(hash, fin);
+      finalized = true;
+    } catch (err) {
+      if (err instanceof TxFailedError || err instanceof TxUnverifiedError) throw err;
+      throw new FinalizationPendingError(hash);
+    }
+  }
+
+  if (opts.verify) {
+    opts.onPhase?.('verifying');
+    await verifyState(hash, opts.verify);
+  }
+  return { hash, finalized };
+}
+
+/** One-shot re-check of an earlier transaction (used by the "Re-check finality" buttons). */
+export async function isFinalized(hash: string): Promise<boolean> {
+  const tx = await readClient.getTransaction({ hash: hash as never });
+  const info = inspectTx(tx);
+  return info.status.includes('FINALIZED') && info.execution === 'SUCCESS';
 }
 
 export async function ensureChain(): Promise<void> {
@@ -238,6 +355,16 @@ export const Engine = {
     await ensureChain();
     return walletSend(ENGINE_ADDRESS, 'judge_incident', [incidentId]);
   },
+
+  async syncAuthority(incidentId: string): Promise<string> {
+    await ensureChain();
+    return walletSend(ENGINE_ADDRESS, 'sync_authority', [incidentId]);
+  },
+
+  async retryAuthority(incidentId: string): Promise<string> {
+    await ensureChain();
+    return walletSend(ENGINE_ADDRESS, 'retry_authority', [incidentId]);
+  },
 };
 
 // ── AuthorityGate ──────────────────────────────────────────────────────────
@@ -270,6 +397,11 @@ export const Gate = {
     await ensureChain();
     return walletSend(GATE_ADDRESS, 'sync_token', [tokenId]);
   },
+
+  async settleToken(tokenId: string): Promise<string> {
+    await ensureChain();
+    return walletSend(GATE_ADDRESS, 'settle_token', [tokenId]);
+  },
 };
 
 // ── GuardedTarget ──────────────────────────────────────────────────────────
@@ -289,6 +421,11 @@ export const Target = {
   async listSuspensionHistory(): Promise<string[]> {
     const r = await viewCall(TARGET_ADDRESS, 'list_suspension_history', []);
     return parseList(r);
+  },
+
+  async getAppliedDigest(tokenId: string): Promise<string> {
+    const r = await viewCall(TARGET_ADDRESS, 'get_applied_op_digest', [tokenId]);
+    return (r as string) ?? '';
   },
 
   async getGovernanceAddress(): Promise<string> {

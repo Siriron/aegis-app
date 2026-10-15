@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Vault, waitForReceipt } from '../aegis/client';
+import { Vault, confirmTx } from '../aegis/client';
+import { useTxMeta } from '../aegis/useTxMeta';
 import { TARGET_ADDRESS, ZERO_ADDRESS } from '../aegis/config';
 import { TxStatus } from '../components/TxStatus';
 import { useWallet } from '../aegis/useWallet';
@@ -13,6 +14,7 @@ const DEMO_SOURCE_RULES = `Evidence must come from approved source hosts only. E
 
 export function CharterNewPage() {
   const nav = useNavigate();
+  const meta = useTxMeta();
   const { connected } = useWallet();
 
   const [form, setForm] = useState({
@@ -53,7 +55,7 @@ export function CharterNewPage() {
     e.preventDefault();
     if (!VALID_SLUG.test(form.policyId)) { setError('Policy ID must be 4–96 chars: A-Z a-z 0-9 . _ : -'); return; }
     if (!VALID_SLUG.test(form.protocolId)) { setError('Protocol ID must be 4–96 chars: A-Z a-z 0-9 . _ : -'); return; }
-    setError(null); setBusy(true); setHash(null);
+    setError(null); setBusy(true); setHash(null); meta.setResult(null);
     try {
       const txHash = await Vault.publishPolicy({
         policyId: form.policyId,
@@ -68,7 +70,10 @@ export function CharterNewPage() {
         activationDelayMinutes: Number(form.activationDelayMinutes),
       });
       setHash(txHash);
-      await waitForReceipt(txHash);
+      meta.setResult(await confirmTx(txHash, {
+        onPhase: meta.setPhase,
+        verify: async () => ((await Vault.getPolicy(form.policyId)) ? null : 'the policy is not readable from PolicyVault'),
+      }));
       void nav(`/policy/${form.policyId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Transaction failed');
@@ -168,7 +173,7 @@ export function CharterNewPage() {
           </div>
         </div>
 
-        <TxStatus hash={hash} error={error} waiting={busy} label="Policy publish" />
+        <TxStatus hash={hash} error={error} waiting={busy} phase={meta.phase} result={meta.result} label="Policy publish" />
 
         <div className="flex gap-3 pt-2">
           <button type="submit" className="btn btn-primary notched" disabled={busy || !connected}>

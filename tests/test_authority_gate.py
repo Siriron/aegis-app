@@ -1,7 +1,7 @@
 import hashlib
 import json
 import pytest
-from conftest import warp, js, hexaddr, checksum, epoch
+from conftest import warp, js, hexaddr, checksum, epoch, SDK_VERSION
 
 C = "contracts/AuthorityGate.py"
 T0 = "2026-10-10T10:00:00Z"
@@ -18,7 +18,7 @@ def op_digest(incident_id, policy_hash, target, action=ACTION, minutes=30):
 def ctx(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie, world):
     """alice deploys the gate and is the token holder, bob is the bound engine, charlie the target."""
     direct_vm.sender = direct_alice
-    gate = direct_deploy(C)
+    gate = direct_deploy(C, sdk_version=SDK_VERSION)
     warp(direct_vm, T0)
     gate.bind_engine(hexaddr(direct_bob))
     return gate
@@ -34,7 +34,7 @@ def issue(gate, vm, engine, holder, target, token="AGT-inc-1", incident="inc-1",
 
 def test_only_the_deployer_binds_the_engine_once(direct_vm, direct_deploy, direct_alice, direct_bob):
     direct_vm.sender = direct_alice
-    gate = direct_deploy(C)
+    gate = direct_deploy(C, sdk_version=SDK_VERSION)
     direct_vm.sender = direct_bob
     with direct_vm.expect_revert("only deployer"):
         gate.bind_engine(hexaddr(direct_bob))
@@ -47,7 +47,7 @@ def test_only_the_deployer_binds_the_engine_once(direct_vm, direct_deploy, direc
 
 def test_tokens_cannot_be_issued_before_the_engine_is_bound(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
     direct_vm.sender = direct_alice
-    gate = direct_deploy(C)
+    gate = direct_deploy(C, sdk_version=SDK_VERSION)
     warp(direct_vm, T0)
     with direct_vm.expect_revert("only the bound JudgmentEngine"):
         issue(gate, direct_vm, direct_bob, direct_alice, direct_charlie)
@@ -180,3 +180,66 @@ def test_only_the_holder_can_sync(ctx, world, direct_vm, direct_alice, direct_bo
     direct_vm.sender = direct_charlie
     with direct_vm.expect_revert("only the holder may sync"):
         ctx.sync_token("AGT-inc-1")
+
+
+# ---------------------------------------------------------------- recovery of a lost finalized child call
+def dispatched(ctx, vm, alice, bob, charlie, world, ttl=1800):
+    issue(ctx, vm, bob, alice, charlie, ttl=ttl)
+    execute(ctx, vm, alice, charlie)
+    world.stub_view(charlie, "get_applied_op_digest", "")
+
+
+def test_a_lost_child_call_is_re_sent_after_the_delay(ctx, world, direct_vm, direct_alice, direct_bob, direct_charlie):
+    dispatched(ctx, direct_vm, direct_alice, direct_bob, direct_charlie, world)
+    with direct_vm.expect_revert("dispatched recently"):
+        execute(ctx, direct_vm, direct_alice, direct_charlie)
+    warp(direct_vm, "2026-10-10T10:02:00Z")
+    assert execute(ctx, direct_vm, direct_alice, direct_charlie) == ACTION
+    assert len(world.emitted) == 2 and world.emitted[1] == world.emitted[0]   # same op_digest: target stays idempotent
+    assert js(ctx.get_token("AGT-inc-1"))["dispatch_count"] == 2
+
+
+def test_re_dispatch_is_bounded_by_count_and_by_expiry(ctx, world, direct_vm, direct_alice, direct_bob, direct_charlie):
+    dispatched(ctx, direct_vm, direct_alice, direct_bob, direct_charlie, world)
+    warp(direct_vm, "2026-10-10T10:02:00Z")
+    execute(ctx, direct_vm, direct_alice, direct_charlie)
+    warp(direct_vm, "2026-10-10T10:04:00Z")
+    execute(ctx, direct_vm, direct_alice, direct_charlie)
+    warp(direct_vm, "2026-10-10T10:06:00Z")
+    with direct_vm.expect_revert("dispatch limit reached"):
+        execute(ctx, direct_vm, direct_alice, direct_charlie)
+    assert len(world.emitted) == 3
+
+
+def test_a_token_that_was_already_applied_is_recorded_not_re_sent(ctx, world, direct_vm, direct_alice, direct_bob, direct_charlie):
+    dispatched(ctx, direct_vm, direct_alice, direct_bob, direct_charlie, world)
+    world.stub_view(direct_charlie, "get_applied_op_digest", op_digest("inc-1", "p" * 64, direct_charlie))
+    warp(direct_vm, "2026-10-10T10:02:00Z")
+    assert execute(ctx, direct_vm, direct_alice, direct_charlie) == "APPLIED"
+    assert js(ctx.get_token("AGT-inc-1"))["state"] == "APPLIED"
+    assert len(world.emitted) == 1
+
+
+def test_settle_token_applies_when_the_target_holds_the_digest(ctx, world, direct_vm, direct_alice, direct_bob, direct_charlie):
+    dispatched(ctx, direct_vm, direct_alice, direct_bob, direct_charlie, world)
+    direct_vm.sender = direct_bob                      # anyone may settle
+    assert ctx.settle_token("AGT-inc-1") == "DISPATCHED"
+    world.stub_view(direct_charlie, "get_applied_op_digest", op_digest("inc-1", "p" * 64, direct_charlie))
+    assert ctx.settle_token("AGT-inc-1") == "APPLIED"
+    assert ctx.settle_token("AGT-inc-1") == "APPLIED"
+
+
+def test_an_unapplied_token_reaches_the_terminal_expired_state(ctx, world, direct_vm, direct_alice, direct_bob, direct_charlie):
+    dispatched(ctx, direct_vm, direct_alice, direct_bob, direct_charlie, world, ttl=300)
+    assert ctx.settle_token("AGT-inc-1") == "DISPATCHED"          # not expired yet
+    warp(direct_vm, "2026-10-10T10:05:01Z")
+    assert ctx.settle_token("AGT-inc-1") == "EXPIRED"
+    assert js(ctx.get_token("AGT-inc-1"))["state"] == "EXPIRED"
+    with direct_vm.expect_revert("token has expired"):
+        execute(ctx, direct_vm, direct_alice, direct_charlie)
+    assert len(world.emitted) == 1
+
+
+def test_settle_token_unknown_token(ctx):
+    with pytest.raises(Exception, match="token not found"):
+        ctx.settle_token("AGT-missing")

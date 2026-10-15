@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Engine, waitForReceipt } from '../aegis/client';
+import { Engine, confirmTx } from '../aegis/client';
+import { useTxMeta } from '../aegis/useTxMeta';
 import { TxStatus } from '../components/TxStatus';
 import { useWallet } from '../aegis/useWallet';
 
 const VALID_SLUG = /^[A-Za-z0-9._:-]{4,96}$/;
 
 export function IncidentNewPage() {
+  const meta = useTxMeta();
   const nav = useNavigate();
   const loc = useLocation();
   const { connected } = useWallet();
@@ -53,7 +55,7 @@ export function IncidentNewPage() {
     if (!VALID_SLUG.test(form.policyId)) { setError('Policy ID must be 4–96 chars'); return; }
     const urls = form.sourceUrls.filter(u => u.trim());
     if (urls.length === 0) { setError('At least one source URL is required'); return; }
-    setError(null); setBusy(true); setHash(null);
+    setError(null); setBusy(true); setHash(null); meta.setResult(null);
     try {
       const txHash = await Engine.openIncident({
         incidentId: form.incidentId,
@@ -64,7 +66,13 @@ export function IncidentNewPage() {
         sourceUrlsJson: JSON.stringify(urls),
       });
       setHash(txHash);
-      await waitForReceipt(txHash);
+      meta.setResult(await confirmTx(txHash, {
+        onPhase: meta.setPhase,
+        verify: async () => {
+          const inc = await Engine.getIncident(form.incidentId);
+          return inc && inc.status === 'OPEN' ? null : 'the incident is not readable from JudgmentEngine';
+        },
+      }));
       void nav(`/incident/${form.incidentId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Transaction failed');
@@ -149,7 +157,7 @@ export function IncidentNewPage() {
           <p className="field-hint mt-1">Leave extra fields empty. URLs are canonicalized and frozen on-chain.</p>
         </div>
 
-        <TxStatus hash={hash} error={error} waiting={busy} label="Incident open" />
+        <TxStatus hash={hash} error={error} waiting={busy} phase={meta.phase} result={meta.result} label="Incident open" />
 
         <div className="flex gap-3 pt-2">
           <button type="submit" className="btn btn-danger notched" disabled={busy || !connected}>

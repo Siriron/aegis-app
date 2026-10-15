@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Vault, waitForReceipt } from '../aegis/client';
+import { Vault, confirmTx } from '../aegis/client';
+import { useTxMeta } from '../aegis/useTxMeta';
 import { explorerAddr } from '../aegis/config';
 import { ActiveBadge } from '../components/StatusBadge';
 import { TxStatus } from '../components/TxStatus';
@@ -9,6 +10,7 @@ import { shortAddr, formatTs, formatCountdown } from '../utils/format';
 import type { Policy } from '../aegis/types';
 
 export function PolicyDetailPage() {
+  const meta = useTxMeta();
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
   const { address } = useWallet();
@@ -47,11 +49,14 @@ export function PolicyDetailPage() {
 
   async function activate() {
     if (!id) return;
-    setBusy(true); setError(null); setHash(null);
+    setBusy(true); setError(null); setHash(null); meta.setResult(null);
     try {
       const txHash = await Vault.activatePolicy(id);
       setHash(txHash);
-      await waitForReceipt(txHash);
+      meta.setResult(await confirmTx(txHash, {
+        onPhase: meta.setPhase,
+        verify: async () => ((await Vault.isActive(id)) ? null : 'PolicyVault does not list this policy as active'),
+      }));
       setIsActive(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Activation failed');
@@ -170,7 +175,7 @@ export function PolicyDetailPage() {
             disabled={busy || !canActivate}>
             {busy ? <><span className="spinner" /> Activating…</> : 'Activate Policy'}
           </button>
-          <TxStatus hash={hash} error={error} waiting={busy} label="Policy activation" />
+          <TxStatus hash={hash} error={error} waiting={busy} phase={meta.phase} result={meta.result} label="Policy activation" />
         </div>
       )}
     </div>

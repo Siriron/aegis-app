@@ -1,6 +1,6 @@
 import json
 import pytest
-from conftest import warp, js, checksum
+from conftest import warp, js, checksum, SDK_VERSION
 
 C = "contracts/PolicyVault.py"
 TRIGGER = "Suspend the guarded operation when two independent status feeds both report a confirmed outage."
@@ -15,7 +15,7 @@ def publish(c, policy_id="pol-1-v1", protocol="proto-alpha", target=None, hosts=
 @pytest.fixture
 def vault(direct_vm, direct_deploy, direct_alice):
     direct_vm.sender = direct_alice
-    c = direct_deploy(C)
+    c = direct_deploy(C, sdk_version=SDK_VERSION)
     warp(direct_vm)   # after deploy: the SDK module only exists once a contract is loaded
     return c
 

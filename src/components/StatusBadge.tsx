@@ -16,6 +16,10 @@ export function IncidentStatusBadge({ status }: { status: IncidentStatus }) {
     case 'OPEN':                   return badge('OPEN', 'cyan', true);
     case 'AUTHORITY_PENDING':      return badge('PENDING FINALITY', 'amber', true);
     case 'CONFIRMED_NO_GOVERNANCE':return badge('GOVERNANCE REJECTED', 'red');
+    case 'AUTHORITY_ISSUED':       return badge('AUTHORITY ISSUED', 'cyan');
+    case 'SUSPENSION_APPLIED':     return badge('SUSPENSION APPLIED', 'green');
+    case 'AUTHORITY_EXPIRED':      return badge('AUTHORITY EXPIRED', 'gray');
+    case 'AUTHORITY_FAILED':       return badge('AUTHORITY FAILED', 'red');
     case 'RETRYABLE':              return badge('RETRYABLE', 'amber');
     case 'CLOSED_NO_AUTHORITY':    return badge('NO AUTHORITY', 'gray');
     default:                       return badge(status, 'gray');
@@ -38,6 +42,7 @@ export function TokenStateBadge({ state }: { state: TokenState }) {
     case 'ISSUED':     return badge('ISSUED', 'cyan', true);
     case 'DISPATCHED': return badge('DISPATCHED', 'amber', true);
     case 'APPLIED':    return badge('APPLIED', 'green');
+    case 'EXPIRED':    return badge('EXPIRED', 'gray');
     default:           return badge(state, 'gray');
   }
 }

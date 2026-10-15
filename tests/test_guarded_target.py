@@ -1,5 +1,5 @@
 import pytest
-from conftest import warp, js, hexaddr, checksum, epoch
+from conftest import warp, js, hexaddr, checksum, epoch, SDK_VERSION
 
 C = "contracts/GuardedTarget.py"
 T0 = "2026-10-10T10:00:00Z"
@@ -10,7 +10,7 @@ DIGEST = "d" * 64
 def target(direct_vm, direct_deploy, direct_alice, direct_bob):
     """alice deploys (so she is governance); bob plays the AuthorityGate."""
     direct_vm.sender = direct_alice
-    c = direct_deploy(C, hexaddr(direct_bob))
+    c = direct_deploy(C, hexaddr(direct_bob), sdk_version=SDK_VERSION)
     warp(direct_vm, T0)
     return c
 
@@ -90,10 +90,17 @@ def test_suspension_blocks_the_guarded_operation_until_it_expires(target, direct
     direct_vm.sender = direct_alice
     direct_vm.origin = direct_alice
     warp(direct_vm, "2026-10-10T10:29:59Z")
-    with direct_vm.expect_revert("suspended"):
-        target.record_signal("during-suspension")
+    assert int(target.record_signal("during-suspension")) == 0          # rejected, committed as a fact
+    assert js(target.get_signal("during-suspension") or "null") is None   # nothing was recorded
+    st = js(target.get_status())
+    assert st["signal_count"] == 0 and st["rejected_count"] == 1
+    rej = js(st["last_rejection_json"])
+    assert rej["signal_key"] == "during-suspension" and rej["suspended_until"] == until
+    assert rej["reason"] == "SUSPENDED_BY_EMERGENCY_AUTHORITY"
     warp(direct_vm, "2026-10-10T10:30:00Z")
-    assert int(target.record_signal("after-suspension")) == 1
+    assert int(target.record_signal("after-suspension")) == 1            # restored after expiry
+    assert js(target.get_status())["rejected_count"] == 1
+    assert js(target.list_signal_keys()) == ["after-suspension"]
 
 
 def test_replaying_the_same_token_is_idempotent(target, direct_vm, direct_alice, direct_bob):
@@ -122,3 +129,27 @@ def test_a_longer_later_suspension_extends(target, direct_vm, direct_alice, dire
     suspend(target, direct_vm, direct_bob, direct_alice, minutes=10, token="AGT-a")
     longer = int(suspend(target, direct_vm, direct_bob, direct_alice, minutes=90, token="AGT-b", digest="b" * 64))
     assert js(target.get_status())["suspended_until"] == longer == epoch(T0) + 90 * 60
+
+
+def test_rejections_accumulate_and_validation_still_reverts_during_suspension(target, direct_vm, direct_alice, direct_bob):
+    suspend(target, direct_vm, direct_bob, direct_alice, minutes=30)
+    direct_vm.sender = direct_alice
+    direct_vm.origin = direct_alice
+    for i in range(3):
+        assert int(target.record_signal(f"blocked-{i}")) == 0
+    assert js(target.get_status())["rejected_count"] == 3
+    with direct_vm.expect_revert("invalid signal_key"):
+        target.record_signal("")
+    direct_vm.sender = direct_bob                                         # an indirect caller is refused, not recorded
+    with direct_vm.expect_revert("direct EOA"):
+        target.record_signal("blocked-indirect")
+    assert js(target.get_status())["rejected_count"] == 3
+
+
+def test_a_duplicate_key_is_still_reverted_when_not_suspended(target, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    direct_vm.origin = direct_alice
+    target.record_signal("dup-1")
+    with direct_vm.expect_revert("signal already recorded"):
+        target.record_signal("dup-1")
+    assert js(target.get_status())["rejected_count"] == 0

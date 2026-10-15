@@ -168,6 +168,16 @@ Runs the validator consensus round and records the verdict.
 
 ---
 
+### `sync_authority` (write)
+
+Anyone may call. Mirrors the gate's token state into the incident: `AUTHORITY_ISSUED`, `SUSPENSION_APPLIED` or `AUTHORITY_EXPIRED`. When the token never appeared and all retries are spent it closes the incident as `AUTHORITY_FAILED`.
+
+### `retry_authority` (write)
+
+Opener only. Re-sends the finalized `issue_token` emission of a `CONFIRMED` incident whose token is absent from the gate, at least 10 minutes after the last emission, at most 3 times. The token id is fixed, so a duplicate that lands later is rejected by the gate.
+
+---
+
 ### `get_incident` (view)
 
 Returns the full incident JSON string for an `incident_id`. Returns `""` if not found.
@@ -238,8 +248,11 @@ Executes a confirmed authority token. Caller must be the token holder.
 
 **Returns:** action_class (str)
 
+**Recovery (lost or failed finalized child call):** a `DISPATCHED` token can be executed again with the same arguments after 120 s, at most 3 dispatches in total and never after expiry. If the target already holds the digest the token is recorded `APPLIED` and nothing is re-sent. The target applies each `token_id` once, so a re-send can never suspend twice.
+
 **Errors:**
 - `token not found`
+- `dispatched recently` / `dispatch limit reached`
 - `only the designated holder may execute`
 - `token already applied`
 - `token has expired`
@@ -253,6 +266,12 @@ Executes a confirmed authority token. Caller must be the token holder.
 ### `sync_token` (write)
 
 Re-checks whether the guarded target has applied the token. Updates state to APPLIED if confirmed. Only the holder may call.
+
+---
+
+### `settle_token` (write)
+
+Anyone may call. Records `APPLIED` if the target already holds the token's op digest, or the terminal `EXPIRED` if the token ran out unapplied. A dispatched token therefore cannot stay unresolved past its expiry.
 
 ---
 
@@ -284,16 +303,15 @@ Returns the bound engine address, or `""` if not yet bound.
 
 ### `record_signal` (write)
 
-The guarded operation. Records a unique signal key. Rejects if a suspension is active.
+The guarded operation. Records a unique signal key. While a suspension is active the call **succeeds but rejects the operation**: it returns `0`, leaves `signal_count` unchanged, increments `rejected_count` and stores `last_rejection_json` (key, caller, time, `suspended_until`). The rejection is therefore a committed, finalizable on-chain fact, not a revert.
 
 | Parameter | Type | Constraints |
 |---|---|---|
 | `signal_key` | str | 1–128 characters, unique, direct EOA call only |
 
-**Returns:** signal sequence number (u256)
+**Returns:** the signal's 1-based sequence number, or `0` when rejected during a suspension
 
 **Errors:**
-- `guarded operation is suspended — emergency authority active`
 - `guarded operations require a direct EOA call`
 - `invalid signal_key`
 - `signal already recorded`
