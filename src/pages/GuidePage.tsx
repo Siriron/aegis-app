@@ -4,7 +4,7 @@ import { Engine, Gate, Target, Vault } from '../aegis/client';
 import { TARGET_ADDRESS, explorerAddr } from '../aegis/config';
 import { useWallet } from '../aegis/useWallet';
 import {
-  clearRun, getRun, newRun, readTxLog, txLogText,
+  clearRun, getRun, newRun, readTxLog, resumeRun, txLogText,
   type LoggedTx, type Run,
 } from '../aegis/demo';
 import type { Incident, TargetStatus } from '../aegis/types';
@@ -35,6 +35,8 @@ export function GuidePage() {
   const [tokenState, setTokenState] = useState('');
   const [target, setTarget] = useState<TargetStatus | null>(null);
   const [copied, setCopied] = useState(false);
+  const [resumeId, setResumeId] = useState('');
+  const [resumeErr, setResumeErr] = useState<string | null>(null);
   const [now, setNow] = useState(Math.floor(Date.now() / 1000));
 
   const refresh = useCallback(async () => {
@@ -68,6 +70,16 @@ export function GuidePage() {
     setRun(newRun(address));
     setLog([]);
     setPolicyOk(false); setActive(false); setInc(null); setContra(null); setTokenState('');
+    void refresh();
+  }
+
+  function resume() {
+    const r = resumeRun(resumeId, address);
+    if (!r) { setResumeErr('Enter the run ID, 4–16 letters or digits (for example mvaoq23s).'); return; }
+    setResumeErr(null);
+    setRun(r);
+    setLog(readTxLog());
+    setInc(null); setContra(null); setTokenState(''); setPolicyOk(false); setActive(false);
     void refresh();
   }
 
@@ -191,6 +203,19 @@ export function GuidePage() {
             ? 'This wallet is the target\'s governance address: you can run every step.'
             : 'This wallet is not the target\'s governance address. Steps 1–6 and 9 (publish, open, judge, execute) can only be run by that address, so you cannot drive them with this wallet. Step 7 and 8 (the guarded operation) work with any wallet while the target is suspended. To run the whole lifecycle yourself, deploy your own GuardedTarget(gate address) and point config.ts at it.'}
         </p>
+      </div>
+
+      <div className="card mb-6">
+        <p className="font-ui text-xs font-bold uppercase tracking-widest mb-2" style={{ color: 'var(--fg-muted)' }}>Resume an earlier run</p>
+        <p className="text-sm mb-2" style={{ color: 'var(--fg-muted)' }}>
+          Runs live on-chain; this browser only remembers the current one. Enter an earlier run ID to see its steps again.
+          The transaction log is per browser and is not restored: find earlier hashes on the explorer.
+        </p>
+        <div className="flex gap-2 items-center">
+          <input value={resumeId} onChange={e => setResumeId(e.target.value)} placeholder="run ID, e.g. mvaoq23s" />
+          <button className="btn btn-ghost notched-sm text-xs" onClick={resume}>Resume</button>
+        </div>
+        {resumeErr && <p className="text-xs mt-2" style={{ color: 'var(--danger)' }}>{resumeErr}</p>}
       </div>
 
       {!run ? (

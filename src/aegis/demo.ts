@@ -86,6 +86,22 @@ export function newRun(address: string | null): Run {
   return run;
 }
 
+// Re-open an earlier run by its suffix (the IDs are derived from it), e.g. after the browser forgot it.
+export function resumeRun(suffix: string, address: string | null): Run | null {
+  const clean = suffix.trim().toLowerCase();
+  if (!/^[a-z0-9]{4,16}$/.test(clean)) return null;
+  const owner = (address ?? '0000000000').replace(/^0x/i, '').slice(0, 6).toLowerCase();
+  const run: Run = {
+    suffix: clean,
+    policyId: `pol-demo-${clean}`,
+    protocolId: `aegis-demo-${owner}`,
+    incidentId: `inc-demo-${clean}`,
+    contraIncidentId: `inc-contra-${clean}`,
+  };
+  save(RUN_KEY, run);
+  return run;
+}
+
 export function clearRun() {
   try { localStorage.removeItem(RUN_KEY); localStorage.removeItem(LOG_KEY); } catch { /* ignore */ }
 }
