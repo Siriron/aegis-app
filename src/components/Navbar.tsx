@@ -2,6 +2,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { WalletButton } from './WalletButton';
 
 const NAV = [
+  { to: '/guide',        label: 'Test Guide' },
   { to: '/command',      label: 'Command' },
   { to: '/policy/new',  label: 'New Charter' },
   { to: '/incident/new', label: 'New Incident' },

@@ -1,21 +1,19 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Vault, confirmTx } from '../aegis/client';
 import { useTxMeta } from '../aegis/useTxMeta';
 import { TARGET_ADDRESS, ZERO_ADDRESS } from '../aegis/config';
 import { TxStatus } from '../components/TxStatus';
 import { useWallet } from '../aegis/useWallet';
+import { DEMO_HOSTS, DEMO_SOURCE_RULES, DEMO_TRIGGER, getRun, newRun } from '../aegis/demo';
 
 const VALID_SLUG = /^[A-Za-z0-9._:-]{4,96}$/;
-
-const DEMO_TRIGGER = `An active exploit is in progress against the protected protocol. This condition is met when at least one credible on-chain security monitor or public disclosure source reports an ongoing attack, fund drain, or critical vulnerability being actively exploited. The evidence must be dated within the past 24 hours and must reference the exact protected protocol by name or contract address.`;
-
-const DEMO_SOURCE_RULES = `Evidence must come from approved source hosts only. Each source must be a publicly accessible HTTPS URL. The validator must fetch the page and find a direct reference to the incident. A single credible source reporting the active exploit is sufficient if the content is unambiguous. Security disclosure blogs and monitoring dashboards are acceptable.`;
 
 export function CharterNewPage() {
   const nav = useNavigate();
   const meta = useTxMeta();
-  const { connected } = useWallet();
+  const loc = useLocation();
+  const { connected, address } = useWallet();
 
   const [form, setForm] = useState({
     policyId: '',
@@ -38,18 +36,27 @@ export function CharterNewPage() {
     setForm(f => ({ ...f, [k]: v }));
   }
 
+  // Demo values that match the evidence files in docs/evidence/ (same host, same wording).
   function autofill() {
+    const run = getRun() ?? newRun(address);
     setForm(f => ({
       ...f,
-      policyId: `policy-demo-${Date.now().toString(36)}`,
-      protocolId: 'aegis-demo-protocol',
+      policyId: run.policyId,
+      protocolId: run.protocolId,
       protocolName: 'Aegis Demo Protocol',
       triggerRules: DEMO_TRIGGER,
       sourceRules: DEMO_SOURCE_RULES,
-      allowedSourcesCsv: 'rekt.news,blog.openzeppelin.com,github.com',
+      allowedSourcesCsv: DEMO_HOSTS,
+      maxSuspendMinutes: 60,
+      authorityTtlMinutes: 30,
       activationDelayMinutes: 2,
     }));
   }
+
+  useEffect(() => {
+    if ((loc.state as { autofill?: boolean } | null)?.autofill) autofill();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

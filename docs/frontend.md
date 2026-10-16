@@ -285,3 +285,10 @@ Shows the phase while waiting (consensus, finalizing, verifying). On success it 
 | `formatTs(unix)` | `Oct 5, 2026 09:14 UTC` |
 | `formatCountdown(unix)` | `14m 32s` / `Expired` |
 | `formatDuration(mins)` | `1 h 30 m` / `45 m` |
+
+
+---
+
+## Guided test: `src/pages/GuidePage.tsx`, `src/aegis/demo.ts`
+
+`/guide` creates a run (`pol-demo-<id>`, `inc-demo-<id>`, one protocol ID per wallet), links to each form with pre-filled demo values (`Publish Policy` autofill, the incident scenario dropdown) and shows per-step state read from PolicyVault, JudgmentEngine, AuthorityGate and GuardedTarget every 20 seconds (StudioNet is rate limited). Confirmed transactions are recorded in `localStorage` by `confirmTx` and can be copied from the page. Nothing leaves the browser.

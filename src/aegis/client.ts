@@ -11,6 +11,7 @@ import {
   GATE_ADDRESS,
   TARGET_ADDRESS,
 } from './config';
+import { recordTx } from './demo';
 import type { Policy, Incident, AuthorityToken, TargetStatus, JudgmentResult } from './types';
 
 import { createClient } from 'genlayer-js';
@@ -56,6 +57,17 @@ async function viewCall(to: string, method: string, args: unknown[] = []): Promi
   });
 }
 
+const sentLabels = new Map<string, string>();
+
+function contractName(addr: string): string {
+  const a = addr.toLowerCase();
+  if (a === VAULT_ADDRESS.toLowerCase()) return 'PolicyVault';
+  if (a === ENGINE_ADDRESS.toLowerCase()) return 'JudgmentEngine';
+  if (a === GATE_ADDRESS.toLowerCase()) return 'AuthorityGate';
+  if (a === TARGET_ADDRESS.toLowerCase()) return 'GuardedTarget';
+  return 'contract';
+}
+
 async function walletSend(to: string, method: string, args: unknown[]): Promise<string> {
   const client = await writeClient();
   const hash = await client.writeContract({
@@ -64,6 +76,7 @@ async function walletSend(to: string, method: string, args: unknown[]): Promise<
     args: args.map(a => (typeof a === 'number' ? BigInt(a) : a)) as never,
     value: BigInt(0),
   });
+  sentLabels.set(hash as string, `${contractName(to)}.${method}`);
   return hash as string;
 }
 
@@ -205,6 +218,8 @@ export async function confirmTx(hash: string, opts: ConfirmOptions = {}): Promis
     throw new TimeoutError(hash);
   }
   assertExecuted(hash, accepted);
+  const label = sentLabels.get(hash) ?? 'transaction';
+  recordTx(label, hash, false);
 
   let finalized = false;
   if (opts.finalize) {
@@ -213,6 +228,7 @@ export async function confirmTx(hash: string, opts: ConfirmOptions = {}): Promis
       const fin = await waitStatus(hash, TransactionStatus.FINALIZED, opts.finalizeTimeoutMs ?? 600_000);
       assertExecuted(hash, fin);
       finalized = true;
+      recordTx(label, hash, true);
     } catch (err) {
       if (err instanceof TxFailedError || err instanceof TxUnverifiedError) throw err;
       throw new FinalizationPendingError(hash);

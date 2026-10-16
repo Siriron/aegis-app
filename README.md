@@ -551,6 +551,14 @@ genvm-lint check contracts/*.py
 - **Lost cross-contract messages are recoverable and bounded.** `judge_incident` and `execute_token` emit finalized child calls. If one is lost: `retry_authority` / `sync_authority` (engine) and re-execution / `settle_token` (gate) resolve it, and every path ends in a terminal state (`AUTHORITY_FAILED`, `AUTHORITY_EXPIRED`, `APPLIED`, `EXPIRED`). Use `authority_ttl_minutes` of 30 or more so a re-send fits inside the token's life.
 - **Rejected guarded operations are on-chain facts.** During a suspension `record_signal` succeeds, returns `0` and increments `rejected_count`; it does not revert.
 
+## Guided test (for reviewers and testers)
+
+Open **Test Guide** in the app. It generates the IDs for one test run, opens each form pre-filled with values that match the demo evidence files in `docs/evidence/`, and turns each step green only when the chain shows the result (policy stored, policy active, verdict recorded, token issued, target suspended, rejection counted, signal restored, token and incident settled). A transaction log of the confirmed transactions can be copied in one click.
+
+- **Who can run which step:** only the target's governance address can publish, open, judge and execute. Any wallet can record signals while the target is suspended (steps 7 and 8). To run the whole lifecycle with your own wallet, deploy your own `GuardedTarget(gate address)` from it and set `TARGET_ADDRESS` in `src/aegis/config.ts`.
+- **Evidence is operator-controlled:** the three feeds are static demo files in this repository. The run proves validators agree on what committed sources say, not that the sources are true.
+- Every step is a real StudioNet transaction; nothing in the guide is simulated.
+
 ## Frontend transaction handling
 
 A write is shown as successful only after: (1) consensus reached ACCEPTED and the receipt's execution result is positively `FINISHED_WITH_RETURN` (a bad status, an execution error or an unreadable result is shown as failure); (2) for calls that emit finalized child messages (`judge_incident`, `execute_token`, `retry_authority`) the transaction is FINALIZED, otherwise the UI says "provisional, appealable"; (3) the relevant contract state is read back and shows the expected change (verdict recorded, token applied on the target, signal recorded or rejection counted). If finalization is slow the page offers "Re-check finality".

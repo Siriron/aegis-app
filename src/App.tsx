@@ -8,6 +8,7 @@ import { IncidentNewPage } from './pages/IncidentNewPage';
 import { IncidentDetailPage } from './pages/IncidentDetailPage';
 import { TokenDetailPage } from './pages/CapabilityDetailPage';
 import { TargetPage } from './pages/VaultPage';
+import { GuidePage } from './pages/GuidePage';
 
 function NotFound() {
   return (
@@ -34,6 +35,7 @@ export default function App() {
             <Route path="/incident/:id"  element={<IncidentDetailPage />} />
             <Route path="/token/:id"     element={<TokenDetailPage />} />
             <Route path="/target"        element={<TargetPage />} />
+            <Route path="/guide"         element={<GuidePage />} />
             <Route path="/charter/new"   element={<Navigate to="/policy/new" replace />} />
             <Route path="/vault"         element={<Navigate to="/target" replace />} />
             <Route path="*"              element={<NotFound />} />

@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Engine, confirmTx } from '../aegis/client';
 import { useTxMeta } from '../aegis/useTxMeta';
 import { TxStatus } from '../components/TxStatus';
 import { useWallet } from '../aegis/useWallet';
+import { SCENARIOS, getRun } from '../aegis/demo';
 
 const VALID_SLUG = /^[A-Za-z0-9._:-]{4,96}$/;
 
@@ -13,7 +14,7 @@ export function IncidentNewPage() {
   const loc = useLocation();
   const { connected } = useWallet();
 
-  const prefilledPolicy = (loc.state as { policyId?: string } | null)?.policyId ?? '';
+  const prefilledPolicy = (loc.state as { policyId?: string } | null)?.policyId ?? getRun()?.policyId ?? '';
 
   const [form, setForm] = useState({
     incidentId: '',
@@ -24,6 +25,7 @@ export function IncidentNewPage() {
     sourceUrls: ['', '', '', ''],
   });
 
+  const [scenario, setScenario] = useState('');
   const [hash, setHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -40,14 +42,31 @@ export function IncidentNewPage() {
     });
   }
 
-  function autofill() {
+  // Pick a demo scenario: fills the incident ID, rationale and evidence URLs.
+  function applyScenario(key: string) {
+    const sc = SCENARIOS.find(x => x.key === key);
+    if (!sc) return;
+    const run = getRun();
+    const id = key === 'contradiction'
+      ? (run?.contraIncidentId ?? `inc-contra-${Date.now().toString(36)}`)
+      : (run?.incidentId ?? `inc-demo-${Date.now().toString(36)}`);
+    setScenario(key);
     setForm(f => ({
       ...f,
-      incidentId: `inc-${Date.now().toString(36)}`,
-      rationale: 'An active exploit has been publicly disclosed targeting the protected protocol. Multiple credible security sources have confirmed the attack is ongoing and the guarded operation must be suspended immediately to prevent further damage.',
-      sourceUrls: ['https://rekt.news/', '', '', ''],
+      incidentId: id,
+      policyId: f.policyId || run?.policyId || '',
+      actionClass: 'SUSPEND_GUARDED_OPERATION',
+      durationMinutes: 5,
+      rationale: sc.rationale,
+      sourceUrls: [...sc.urls, '', '', '', ''].slice(0, 4),
     }));
   }
+
+  useEffect(() => {
+    const st = loc.state as { scenario?: string } | null;
+    if (st?.scenario) applyScenario(st.scenario);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -95,10 +114,18 @@ export function IncidentNewPage() {
         </p>
       </div>
 
-      <div className="flex justify-end mb-4">
-        <button className="btn btn-ghost notched-sm text-xs" onClick={autofill} type="button">
-          Autofill Demo
-        </button>
+      <div className="mb-5">
+        <label>Demo scenario (fills the incident ID, rationale and evidence URLs)</label>
+        <select value={scenario} onChange={e => applyScenario(e.target.value)}>
+          <option value="">Choose a scenario…</option>
+          {SCENARIOS.map(sc => <option key={sc.key} value={sc.key}>{sc.label}</option>)}
+        </select>
+        {scenario && (
+          <p className="text-xs mt-1" style={{ color: 'var(--fg-muted)' }}>
+            Expected: {SCENARIOS.find(x => x.key === scenario)?.expected}. The evidence files are static demo
+            sources under docs/evidence/ in this repository.
+          </p>
+        )}
       </div>
 
       <form onSubmit={(e) => { void submit(e); }} className="flex flex-col gap-5">
