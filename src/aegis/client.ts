@@ -174,13 +174,26 @@ export interface TxResult {
 
 const POLL_MS = 4000;
 
+// Own polling loop instead of the SDK's waitForTransactionReceipt: a transient RPC error (rate limit,
+// transaction not indexed yet) must not abort the wait, and a transaction that already moved on to
+// FINALIZED must satisfy a wait for ACCEPTED. Only the deadline ends the wait.
 async function waitStatus(hash: string, status: unknown, timeoutMs: number): Promise<unknown> {
-  return readClient.waitForTransactionReceipt({
-    hash: hash as never,
-    status: status as never,
-    retries: Math.max(1, Math.ceil(timeoutMs / POLL_MS)),
-    interval: POLL_MS,
-  });
+  const wantFinal = String(status).toUpperCase().includes('FINALIZED');
+  const deadline = Date.now() + timeoutMs;
+  let delay = POLL_MS;
+  while (Date.now() < deadline) {
+    try {
+      const tx = await readClient.getTransaction({ hash: hash as never });
+      const st = inspectTx(tx).status;
+      if (BAD_STATUSES.some(b => st.includes(b))) return tx;
+      if (wantFinal ? st.includes('FINALIZED') : (st.includes('ACCEPTED') || st.includes('FINALIZED'))) return tx;
+      delay = POLL_MS;
+    } catch {
+      delay = Math.min(delay * 2, 20_000);   // back off on RPC errors / 429
+    }
+    await new Promise(r => setTimeout(r, delay));
+  }
+  throw new Error('wait deadline reached');
 }
 
 function assertExecuted(hash: string, tx: unknown): TxInspection {

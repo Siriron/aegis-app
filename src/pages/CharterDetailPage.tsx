@@ -59,6 +59,7 @@ export function PolicyDetailPage() {
       }));
       setIsActive(true);
     } catch (err) {
+      try { setIsActive(await Vault.isActive(id)); } catch { /* leave as is */ }
       setError(err instanceof Error ? err.message : 'Activation failed');
     } finally {
       setBusy(false);
