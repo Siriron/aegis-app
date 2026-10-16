@@ -1,0 +1,26 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "genlayer-test==0.29.2" genvm-linter
+      - run: genvm-lint download --version v0.2.16
+      - run: |
+          for f in contracts/*.py; do genvm-lint check "$f"; genvm-lint typecheck "$f"; done
+      - run: pytest tests -q -p no:cacheprovider
+      - run: python scripts/check_ui_vs_abi.py
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npx tsc --noEmit
+      - run: npm run build
