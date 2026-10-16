@@ -561,17 +561,17 @@ A write is shown as successful only after: (1) consensus reached ACCEPTED and th
 
 **What the tests do not prove:** real LLM behavior, real network behavior, real multi-validator timing, or the real cross-contract calls between the four contracts (stubbed in direct mode).
 
-**End-to-end evidence on StudioNet:** `node scripts/e2e-lifecycle.mjs` deploys the four contracts, binds the gate and runs the whole lifecycle with real consensus: publish, activate, open, judge, finalized token issuance, execute, guarded operation rejected during suspension, restored after expiry, token and incident settlement, replay refusal, and a contradicting-evidence incident that must not confirm. It writes `docs/evidence/lifecycle-<timestamp>.md` with every transaction hash and state read, and updates the addresses in `src/aegis/config.ts`. It was not run in the sandbox that produced this commit (no StudioNet access); until a lifecycle file exists under `docs/evidence/`, no end-to-end claim is made and the addresses below belong to the previous contract version.
+**End-to-end evidence on StudioNet:** `node scripts/e2e-lifecycle.mjs` deploys the four contracts, binds the gate and runs the whole lifecycle with real consensus: publish, activate, open, judge, finalized token issuance, execute, guarded operation rejected during suspension, restored after expiry, token and incident settlement, replay refusal, and a contradicting-evidence incident that must not confirm. It writes `docs/evidence/lifecycle-<timestamp>.md` with every transaction hash and state read, and updates the addresses in `src/aegis/config.ts`. It was not run in the sandbox that produced this commit (no StudioNet access); until a lifecycle evidence file exists under `docs/evidence/`, no end-to-end claim is made.
 
 ## Deployed contracts (StudioNet)
 
-StudioNet is a temporary test network: addresses may not survive resets, so the repository tests and the lifecycle evidence file are the proof of behavior, not the address. These addresses are the previous contract version; redeploy with `node scripts/e2e-lifecycle.mjs`.
+StudioNet is a temporary test network: addresses may not survive resets, so the repository tests and the lifecycle evidence file are the proof of behavior, not the address. These are the redeployed contracts running the current code in `contracts/` (Oct 2026). Deployment and the engine binding are recorded below; the lifecycle run through the app is documented in `docs/evidence/` once its transactions exist.
 
 | Contract | Address |
 |---|---|
-| PolicyVault | [`0x711c5Abc26CD35fe89be962fDdBc210E59f3D636`](https://explorer-studio.genlayer.com/address/0x711c5Abc26CD35fe89be962fDdBc210E59f3D636) |
-| AuthorityGate | [`0x88CFE8751b76064c9FC28B90fDe93815Ea966166`](https://explorer-studio.genlayer.com/address/0x88CFE8751b76064c9FC28B90fDe93815Ea966166) |
-| GuardedTarget | [`0x2c4307C13E909a232acF1DbEeD4Cd4ac0A98b953`](https://explorer-studio.genlayer.com/address/0x2c4307C13E909a232acF1DbEeD4Cd4ac0A98b953) |
-| JudgmentEngine | [`0x7e50078AfB31E880406197E64910Ec2dbFf6BC30`](https://explorer-studio.genlayer.com/address/0x7e50078AfB31E880406197E64910Ec2dbFf6BC30) |
+| PolicyVault | [`0x2f2E2064994715bfDb5F399b968E77C7759c2148`](https://explorer-studio.genlayer.com/address/0x2f2E2064994715bfDb5F399b968E77C7759c2148) |
+| AuthorityGate | [`0xb4032127b0E33916e1Fd4B2B6C9f397cBA622e57`](https://explorer-studio.genlayer.com/address/0xb4032127b0E33916e1Fd4B2B6C9f397cBA622e57) |
+| GuardedTarget | [`0x8100713b0C76E04De7E8CAE7a410dCd824b29Cf1`](https://explorer-studio.genlayer.com/address/0x8100713b0C76E04De7E8CAE7a410dCd824b29Cf1) |
+| JudgmentEngine | [`0x92F5e5617EDADD456B54893CD0fe122D3FE2c0E0`](https://explorer-studio.genlayer.com/address/0x92F5e5617EDADD456B54893CD0fe122D3FE2c0E0) |
 
-Engine bound to the gate in [`0xb2022e…56fe`](https://explorer-studio.genlayer.com/tx/0xb2022e8d5511e4a787c668f9e3a4d8143321731af2f8f0ac3be5045a357a56fe).
+Engine bound to the gate in [`0x53fea6…7279`](https://explorer-studio.genlayer.com/tx/0x53fea62dbff07449c29abe02545ea42a189e4b56e39cceac4ec0574ab7197279).
