@@ -25,3 +25,7 @@ Every `direct_deploy` pins `sdk_version="v0.2.16"`. Unpinned, `genlayer-test` re
 
 **Proves:** the real contract code under the GenVM SDK in direct mode, including validator agreement rules, fetch-failure handling, state guards and recovery paths.
 **Does not prove:** real LLM behavior, real network behavior, real multi-validator timing, or the real cross-contract calls (stubbed). StudioNet is temporary; addresses may not survive resets.
+
+## Live lifecycle evidence
+
+The full workflow was run through the deployed app on StudioNet on Oct 17 2026 (run `mvaoq23s`): see [`docs/evidence/lifecycle-mvaoq23s.md`](./evidence/lifecycle-mvaoq23s.md) for the transactions and the on-chain state read at each step. The repository tests above prove contract logic in direct mode (stubbed cross-contract calls, mocked web and LLM); the evidence file is the live proof of the cross-contract flow. StudioNet is temporary: addresses may not survive resets.

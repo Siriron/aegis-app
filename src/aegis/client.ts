@@ -128,14 +128,26 @@ type Receipt = {
   statusName?: string;
   status?: unknown;
   txExecutionResultName?: string;
-  consensus_data?: { leader_receipt?: Array<{ execution_result?: string; error?: string | null; result?: string }> };
-  consensusData?: { leader_receipt?: Array<{ execution_result?: string; error?: string | null; result?: string }> };
+  consensus_data?: { leader_receipt?: Array<{ execution_result?: string; error?: unknown; result?: unknown }> };
+  consensusData?: { leader_receipt?: Array<{ execution_result?: string; error?: unknown; result?: unknown }> };
 };
 
 export interface TxInspection {
   status: string;                           // e.g. ACCEPTED, FINALIZED, UNDETERMINED
   execution: 'SUCCESS' | 'ERROR' | 'UNKNOWN';
   error: string | null;
+}
+
+// The leader receipt carries the revert reason as a string or as an object (e.g. a UserError payload).
+// Never String() an object: that renders "[object Object]".
+function describeError(raw: unknown): string {
+  if (raw === null || raw === undefined || raw === '') return 'execution error';
+  if (typeof raw === 'string') return raw.slice(0, 300);
+  try {
+    const o = raw as { message?: unknown; data?: unknown; reason?: unknown };
+    for (const v of [o.message, o.reason, o.data]) if (typeof v === 'string' && v) return v.slice(0, 300);
+    return JSON.stringify(raw).slice(0, 300);
+  } catch { return 'execution error'; }
 }
 
 // Pure reading of a receipt. ACCEPTED only means the validators agreed on a result; that result
@@ -149,7 +161,7 @@ export function inspectTx(tx: unknown): TxInspection {
   let execution: TxInspection['execution'] = 'UNKNOWN';
   if (resultName === 'FINISHED_WITH_RETURN' || lr?.execution_result === 'SUCCESS') execution = 'SUCCESS';
   if (resultName === 'FINISHED_WITH_ERROR' || lr?.execution_result === 'ERROR') execution = 'ERROR';
-  const error = execution === 'ERROR' ? String(lr?.error || lr?.result || 'execution error').slice(0, 300) : null;
+  const error = execution === 'ERROR' ? describeError(lr?.error ?? lr?.result) : null;
   return { status, execution, error };
 }
 

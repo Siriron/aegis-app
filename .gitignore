@@ -1,7 +1,0 @@
-*.log
-.env
-.pytest_cache/
-__pycache__/
-artifacts/
-dist/
-node_modules/
