@@ -160,10 +160,10 @@ export function GuidePage() {
       detail: target ? `Signals recorded: ${target.signal_count}` : undefined,
     },
     {
-      n: '9', title: 'Settle token and incident',
-      what: 'Press Sync on the token page, then "Sync authority from gate" on the incident page.',
-      link: inc?.token_id ? { to: `/token/${inc.token_id}`, label: 'Open token' } : undefined,
-      done: tokenState === 'APPLIED' && inc?.status === 'SUSPENSION_APPLIED',
+      n: '9', title: 'Settle the incident',
+      what: 'Open the incident and press "Sync authority from gate" (shown while the status is AUTHORITY_PENDING or AUTHORITY_ISSUED). The token needs no action if it already shows APPLIED.',
+      link: { to: `/incident/${run.incidentId}`, label: 'Open incident' },
+      done: inc?.status === 'SUSPENSION_APPLIED',
       detail: inc ? `Incident: ${inc.status}` : undefined,
     },
     {
